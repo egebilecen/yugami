@@ -1,0 +1,7 @@
+[package]
+name = "kekkai"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+proc_macros.workspace = true

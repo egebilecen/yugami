@@ -1,0 +1,6 @@
+[workspace]
+members = ["kekkai", "packer", "proc_macros"]
+
+[workspace.dependencies]
+kekkai = { path = "kekkai" }
+proc_macros = { path = "proc_macros" }
