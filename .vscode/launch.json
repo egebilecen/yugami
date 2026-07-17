@@ -1,0 +1,45 @@
+{
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=packer"
+                ],
+                "filter": {
+                    "name": "packer",
+                    "kind": "bin"
+                }
+            },
+            "args": [
+                "--path",
+                "test.exe"
+            ],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Run",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=packer"
+                ],
+                "filter": {
+                    "name": "packer",
+                    "kind": "bin"
+                }
+            },
+            "args": [
+                "--path",
+                "test.exe"
+            ],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}
