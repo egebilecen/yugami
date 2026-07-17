@@ -8,13 +8,3 @@ pub(crate) fn print_bytes(buf: &[u8], width: usize) {
         }
     }
 }
-
-#[allow(unused_macros)]
-macro_rules! dprintln {
-    ($($arg:tt)*) => {
-        #[cfg(debug_assertions)]
-        println!($($arg)*);
-    };
-}
-#[allow(unused_imports)]
-pub(crate) use dprintln;
