@@ -1,5 +1,6 @@
 #[cfg(debug_assertions)]
 mod debug;
+mod random;
 
 use argh::FromArgs;
 use indicatif::{ProgressBar, ProgressStyle};
