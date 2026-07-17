@@ -32,7 +32,8 @@ pub fn encrypt_payload(payload: &mut Vec<u8>, base_key: &U8_32) {
         let mut page_key = [0u8; 32];
         derive_page_key(base_key, i, &mut page_key);
 
-        let page_slice = &mut payload[start_offset..end_offset].try_into().unwrap();
+        let page_slice =
+            (&mut payload[start_offset..end_offset]).try_into().unwrap();
         perform_xor(page_slice, &page_key);
     }
 }
