@@ -1,5 +1,5 @@
 [workspace]
-members = ["kekkai", "packer", "proc_macros"]
+members = ["kekkai", "packer", "proc_macros", "stub"]
 
 [workspace.dependencies]
 kekkai = { path = "kekkai" }
