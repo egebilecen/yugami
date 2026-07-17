@@ -425,6 +425,8 @@ dependencies = [
  "kekkai",
  "pe-parser",
  "proc_macros",
+ "rand",
+ "rand_chacha",
 ]
 
 [[package]]
