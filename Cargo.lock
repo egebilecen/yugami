@@ -274,6 +274,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "debug"
+version = "0.1.0"
+
+[[package]]
 name = "encode_unicode"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -376,6 +380,8 @@ dependencies = [
  "blake3",
  "chacha20",
  "proc_macros",
+ "rand",
+ "rand_chacha",
 ]
 
 [[package]]
@@ -421,12 +427,11 @@ name = "packer"
 version = "0.1.0"
 dependencies = [
  "argh",
+ "debug",
  "indicatif",
  "kekkai",
  "pe-parser",
  "proc_macros",
- "rand",
- "rand_chacha",
 ]
 
 [[package]]
@@ -581,6 +586,8 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 name = "stub"
 version = "0.1.0"
 dependencies = [
+ "debug",
+ "kekkai",
  "pe-parser",
  "proc_macros",
 ]

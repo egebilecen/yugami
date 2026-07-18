@@ -1,10 +1,12 @@
 use pe_parser::pe::parse_portable_executable;
 use std::cmp::max;
-use std::env;
 use std::error::Error;
 use std::fs;
 use std::process::ExitCode;
+use std::{env, ptr};
 
+use debug::dprintln;
+use kekkai::payload::PayloadInfo;
 use proc_macros::xor_string;
 
 fn run() -> Result<(), Box<dyn Error>> {
@@ -21,10 +23,31 @@ fn run() -> Result<(), Box<dyn Error>> {
         highest_section_offset = max(section_end as usize, highest_section_offset);
     }
 
-    // ─── Check Overlay ───────────────────────────────────────────────────
+    // ─── Check And Read Overlay ──────────────────────────────────────────
     if exe_bytes.len() <= highest_section_offset {
         return Err(xor_string!("No overlay found!").into());
     }
+
+    dprintln!("Overlay found in the stub, extracting...");
+    let overlay = &exe_bytes[highest_section_offset..];
+
+    if overlay.len() < size_of::<PayloadInfo>() {
+        return Err(xor_string!(
+            "The overlay is smaller than expected. Something might have gone wrong during the packing process."
+        ).into());
+    }
+
+    let payload_info = unsafe { ptr::read(overlay.as_ptr() as *const PayloadInfo) };
+    dprintln!("[Payload Info]");
+    dprintln!(
+        "Base key: {}",
+        payload_info
+            .base_key
+            .map(|b| format!("{:02X}", b))
+            .join(" ")
+    );
+    dprintln!("IAT RVA: {}", payload_info.iat_rva);
+    dprintln!("IAT size: {}", payload_info.iat_size);
 
     Ok(())
 }

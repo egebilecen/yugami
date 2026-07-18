@@ -7,3 +7,5 @@ edition = "2024"
 blake3 = { version = "1.8.5", default-features = false }
 chacha20 = "0.10.1"
 proc_macros.workspace = true
+rand = "0.10.2"
+rand_chacha = "0.10.0"

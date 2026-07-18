@@ -1,17 +1,16 @@
-#[cfg(debug_assertions)]
-mod debug;
-mod random;
-
 use argh::FromArgs;
 use indicatif::{ProgressBar, ProgressStyle};
 use pe_parser::pe::parse_portable_executable;
 use std::path::Path;
 use std::process::ExitCode;
+use std::slice;
+use std::thread;
 use std::time::Duration;
 use std::{error::Error, fs};
 
-use crate::random::get_random_bytes;
+use kekkai::random::get_random_bytes;
 use kekkai::{crypto::encrypt_payload, payload::PayloadInfo};
+use debug::dprintln;
 
 #[derive(FromArgs, Debug)]
 #[argh(description = "Kekkai (結界) - A binary packer.")]
@@ -29,6 +28,7 @@ fn run(args: CliArgs) -> Result<(), Box<dyn Error>> {
             .template("{spinner:.green} {msg}")?,
     );
     spinner.enable_steady_tick(Duration::from_millis(80));
+    let sleep_dur = Duration::from_millis(250);
 
     // ─── Locate The Stub ─────────────────────────────────────────────────
     spinner.set_message("Locating the stub...");
@@ -41,10 +41,14 @@ fn run(args: CliArgs) -> Result<(), Box<dyn Error>> {
     };
     let stub_path = Path::new(stub_path);
 
+    thread::sleep(sleep_dur);
+
     // ─── Read The Stub ───────────────────────────────────────────────────
     spinner.set_message("Reading the stub...");
     let mut stub_data = fs::read(stub_path)
         .map_err(|err| format!("Couldn't read file `{}`: {}", args.path, err))?;
+
+    thread::sleep(sleep_dur);
 
     // ─── Read The Payload ────────────────────────────────────────────────
     spinner.set_message("Reading the payload...");
@@ -57,6 +61,7 @@ fn run(args: CliArgs) -> Result<(), Box<dyn Error>> {
 
     let mut file_data = fs::read(&args.path)
         .map_err(|err| format!("Couldn't read file `{}`: {}", args.path, err))?;
+    dprintln!("Payload size: {}", file_data.len());
 
     // ─── Extract PE Information From Payload ─────────────────────────────
     let pe = parse_portable_executable(&file_data)
@@ -73,26 +78,59 @@ fn run(args: CliArgs) -> Result<(), Box<dyn Error>> {
         return Err("Couldn't find IAT RVA.".into());
     };
 
-    // ─── Generate Key And Create Payload Info ────────────────────────────
+    dprintln!("IAT RVA: {}", iat_rva);
+    dprintln!("IAT size: {}", iat_size);
+
+    thread::sleep(sleep_dur);
+
+    // ─── Encrypt The Payload ─────────────────────────────────────────────
+    spinner.set_message("Encrypting the payload...");
+
     let base_key = get_random_bytes(32);
     let base_key: &[u8; 32] = base_key
         .as_slice()
         .try_into()
         .map_err(|_| "Couldn't convert key vector to slice.".to_string())?;
+    dprintln!(
+        "Generated random base key: {}",
+        base_key.map(|b| format!("{:02X}", b)).join(" ")
+    );
 
-    let payload_info = PayloadInfo::new(base_key, iat_rva as usize, (iat_rva + iat_size) as usize);
+    encrypt_payload(&mut file_data, base_key);
+    thread::sleep(sleep_dur);
 
     // ─── Add Payload As Overlay To Stub ──────────────────────────────────
-    spinner.set_message("Appending target payload ({} bytes) as PE overlay...");
-    // TODO: Append `payload_info` after padding it to 128 bytes.
+    spinner.set_message("Appending target payload as PE overlay...");
+
+    let payload_info = PayloadInfo::new(
+        base_key.to_owned(),
+        iat_rva,
+        iat_size,
+    );
+    let payload_info_bytes = unsafe {
+        slice::from_raw_parts(
+            &payload_info as *const PayloadInfo as *const u8,
+            size_of::<PayloadInfo>(),
+        )
+    };
+
+    dprintln!("Payload info size: {}", payload_info_bytes.len());
+    dprintln!(
+        "Total overlay size: {}",
+        payload_info_bytes.len() + file_data.len()
+    );
+
+    stub_data.extend_from_slice(payload_info_bytes);
     stub_data.extend_from_slice(&file_data);
 
-    // ─── Encrypt The Payload ─────────────────────────────────────────────
-    spinner.set_message("Obfuscating the payload...");
-    encrypt_payload(&mut file_data, base_key);
+    thread::sleep(sleep_dur);
+
+    // ─── Write The Packed Payload Into A File ────────────────────────────
+    fs::write("packed.exe", stub_data)
+        .map_err(|err| format!("Couldn't write packed payload into a file: {}", err).to_string())?;
 
     // ─── End ─────────────────────────────────────────────────────────────
-    spinner.finish_with_message("Payload successfully obfuscated!");
+    spinner.finish_with_message("Successfully packed the payload!");
     Ok(())
 }
 

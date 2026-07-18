@@ -13,3 +13,8 @@ pub fn get_random_bytes(size: usize) -> Vec<u8> {
 
     vec
 }
+
+pub fn fill_random_bytes(buf: &mut [u8]) {
+    let mut rng = get_rng();
+    rng.fill_bytes(buf);
+}

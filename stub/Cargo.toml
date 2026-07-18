@@ -4,5 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+kekkai.workspace = true
 pe-parser = "0.7.0"
 proc_macros.workspace = true
+debug.workspace = true
