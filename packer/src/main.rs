@@ -8,9 +8,9 @@ use std::thread;
 use std::time::Duration;
 use std::{error::Error, fs};
 
+use debug::dprintln;
 use kekkai::random::get_random_bytes;
 use kekkai::{crypto::encrypt_payload, payload::PayloadInfo};
-use debug::dprintln;
 
 #[derive(FromArgs, Debug)]
 #[argh(description = "Kekkai (結界) - A binary packer.")]
@@ -45,7 +45,7 @@ fn run(args: CliArgs) -> Result<(), Box<dyn Error>> {
 
     // ─── Read The Stub ───────────────────────────────────────────────────
     spinner.set_message("Reading the stub...");
-    let mut stub_data = fs::read(stub_path)
+    let mut stub = fs::read(stub_path)
         .map_err(|err| format!("Couldn't read file `{}`: {}", args.path, err))?;
 
     thread::sleep(sleep_dur);
@@ -59,12 +59,12 @@ fn run(args: CliArgs) -> Result<(), Box<dyn Error>> {
         return Err(format!("No such file found in given path: {}", args.path).into());
     }
 
-    let mut file_data = fs::read(&args.path)
+    let mut payload = fs::read(&args.path)
         .map_err(|err| format!("Couldn't read file `{}`: {}", args.path, err))?;
-    dprintln!("Payload size: {}", file_data.len());
+    dprintln!("Payload size: {}", payload.len());
 
     // ─── Extract PE Information From Payload ─────────────────────────────
-    let pe = parse_portable_executable(&file_data)
+    let pe = parse_portable_executable(&payload)
         .map_err(|err| format!("Couldn't parse the PE file: {}", err))?;
 
     let (iat_rva, iat_size) = if let Some(opt_header) = pe.optional_header_64 {
@@ -96,17 +96,16 @@ fn run(args: CliArgs) -> Result<(), Box<dyn Error>> {
         base_key.map(|b| format!("{:02X}", b)).join(" ")
     );
 
-    encrypt_payload(&mut file_data, base_key);
+    let prev_payload_size = payload.len();
+    encrypt_payload(&mut payload, base_key);
+    dprintln!("Payload is padded by {} bytes.", payload.len() - prev_payload_size);
+
     thread::sleep(sleep_dur);
 
     // ─── Add Payload As Overlay To Stub ──────────────────────────────────
     spinner.set_message("Appending target payload as PE overlay...");
 
-    let payload_info = PayloadInfo::new(
-        base_key.to_owned(),
-        iat_rva,
-        iat_size,
-    );
+    let payload_info = PayloadInfo::new(base_key.to_owned(), iat_rva, iat_size);
     let payload_info_bytes = unsafe {
         slice::from_raw_parts(
             &payload_info as *const PayloadInfo as *const u8,
@@ -117,16 +116,16 @@ fn run(args: CliArgs) -> Result<(), Box<dyn Error>> {
     dprintln!("Payload info size: {}", payload_info_bytes.len());
     dprintln!(
         "Total overlay size: {}",
-        payload_info_bytes.len() + file_data.len()
+        payload_info_bytes.len() + payload.len()
     );
 
-    stub_data.extend_from_slice(payload_info_bytes);
-    stub_data.extend_from_slice(&file_data);
+    stub.extend_from_slice(payload_info_bytes);
+    stub.extend_from_slice(&payload);
 
     thread::sleep(sleep_dur);
 
     // ─── Write The Packed Payload Into A File ────────────────────────────
-    fs::write("packed.exe", stub_data)
+    fs::write("packed.exe", stub)
         .map_err(|err| format!("Couldn't write packed payload into a file: {}", err).to_string())?;
 
     // ─── End ─────────────────────────────────────────────────────────────
