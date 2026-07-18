@@ -618,6 +618,7 @@ dependencies = [
  "pe-parser",
  "proc_macros",
  "region",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

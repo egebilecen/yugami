@@ -4,7 +4,17 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+debug.workspace = true
 kekkai.workspace = true
 pe-parser = "0.7.0"
 proc_macros.workspace = true
-debug.workspace = true
+region = "3.0.2"
+windows-sys = {
+  version = "0.61.2",
+  features = [
+    "Win32_Foundation",
+    "Win32_System",
+    "Win32_System_Kernel",
+    "Win32_System_Diagnostics_Debug",
+  ]
+}
