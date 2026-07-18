@@ -19,6 +19,15 @@ struct CliArgs {
     path: String,
 }
 
+const BANNER: &str = r#"
+ ____  __.      __    __           .__ 
+|    |/ _|____ |  | _|  | _______  |__|
+|      <_/ __ \|  |/ /  |/ /\__  \ |  |
+|    |  \  ___/|    <|    <  / __ \|  |
+|____|__ \___  >__|_ \__|_ \(____  /__|
+        \/   \/     \/    \/     \/       結界
+"#;
+
 fn run(args: CliArgs) -> Result<(), Box<dyn Error>> {
     // ─── Spinner Setup ───────────────────────────────────────────────────
     let spinner = ProgressBar::new_spinner();
@@ -134,6 +143,7 @@ fn run(args: CliArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn main() -> ExitCode {
+    println!("{}", BANNER);
     let args: CliArgs = argh::from_env();
 
     if let Err(error) = run(args) {
