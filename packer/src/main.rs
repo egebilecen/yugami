@@ -26,7 +26,7 @@ const BANNER: &str = r#"
 |      <_/ __ \|  |/ /  |/ /\__  \ |  |
 |    |  \  ___/|    <|    <  / __ \|  |
 |____|__ \___  >__|_ \__|_ \(____  /__|
-        \/   \/     \/    \/     \/       結界
+        \/   \/     \/    \/     \/       結界 - A binary packer.
 "#;
 
 fn run(args: CliArgs) -> Result<(), Box<dyn Error>> {
@@ -77,17 +77,26 @@ fn run(args: CliArgs) -> Result<(), Box<dyn Error>> {
     let pe = parse_portable_executable(&payload)
         .map_err(|err| format!("Couldn't parse the PE file: {}", err))?;
 
-    let (iat_rva, iat_size) = if let Some(opt_header) = pe.optional_header_64 {
+    let (iat_rva, iat_size, entry_point_rva) = if let Some(opt_header) = pe.optional_header_64 {
         let iat = opt_header.data_directories.import_address_table;
-        (iat.virtual_address, iat.size)
+        (
+            iat.virtual_address,
+            iat.size,
+            opt_header.address_of_entry_point,
+        )
     } else if let Some(opt_header) = pe.optional_header_32 {
         let iat = opt_header.data_directories.import_address_table;
-        (iat.virtual_address, iat.size)
+        (
+            iat.virtual_address,
+            iat.size,
+            opt_header.address_of_entry_point,
+        )
     } else {
         spinner.finish_and_clear();
         return Err("Couldn't find IAT RVA.".into());
     };
 
+    dprintln!("Entry point RVA: 0x{:02X}", entry_point_rva);
     dprintln!("IAT RVA: {}", iat_rva);
     dprintln!("IAT size: {}", iat_size);
 
@@ -118,7 +127,7 @@ fn run(args: CliArgs) -> Result<(), Box<dyn Error>> {
     // ─── Add Payload As Overlay To Stub ──────────────────────────────────
     spinner.set_message("Appending target payload as PE overlay...");
 
-    let payload_info = PayloadInfo::new(base_key.to_owned(), iat_rva, iat_size);
+    let payload_info = PayloadInfo::new(base_key.to_owned(), entry_point_rva, iat_rva, iat_size);
     let payload_info_bytes = unsafe {
         slice::from_raw_parts(
             &payload_info as *const PayloadInfo as *const u8,
