@@ -1,9 +1,10 @@
-use pe_parser::pe::parse_portable_executable;
 use std::cmp::max;
 use std::error::Error;
 use std::fs;
 use std::process::ExitCode;
 use std::{env, ptr};
+
+use pe_parser::pe::parse_portable_executable;
 
 use debug::dprintln;
 use kekkai::payload::PayloadInfo;

@@ -1,12 +1,13 @@
-use argh::FromArgs;
-use indicatif::{ProgressBar, ProgressStyle};
-use pe_parser::pe::parse_portable_executable;
 use std::path::Path;
 use std::process::ExitCode;
 use std::slice;
 use std::thread;
 use std::time::Duration;
 use std::{error::Error, fs};
+
+use argh::FromArgs;
+use indicatif::{ProgressBar, ProgressStyle};
+use pe_parser::pe::parse_portable_executable;
 
 use debug::dprintln;
 use kekkai::random::get_random_bytes;
@@ -107,7 +108,10 @@ fn run(args: CliArgs) -> Result<(), Box<dyn Error>> {
 
     let prev_payload_size = payload.len();
     encrypt_payload(&mut payload, base_key);
-    dprintln!("Payload is padded by {} bytes.", payload.len() - prev_payload_size);
+    dprintln!(
+        "Payload is padded by {} bytes.",
+        payload.len() - prev_payload_size
+    );
 
     thread::sleep(sleep_dur);
 
