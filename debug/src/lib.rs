@@ -10,8 +10,8 @@ pub fn print_bytes(buf: &[u8], size: usize) {
 
 #[macro_export]
 macro_rules! dprintln {
-    ($($arg:tt)*) => {
+    ($fmt:expr $(, $($arg:tt)*)?) => {
         #[cfg(debug_assertions)]
-        println!($($arg)*);
+        println!(concat!("[DEBUG] ", $fmt) $(, $($arg)*)?);
     };
 }
