@@ -6,7 +6,7 @@
             "name": "Debug",
             "cargo": {
                 "args": [
-                    "build",
+                    "run",
                     "--bin=packer"
                 ],
                 "filter": {
@@ -19,7 +19,8 @@
                 "test.exe"
             ],
             "cwd": "${workspaceFolder}",
-            "console": "integratedTerminal"
+            "console": "integratedTerminal",
+            "preLaunchTask": "Build Packer"
         },
         {
             "type": "lldb",
@@ -39,7 +40,8 @@
                 "--path",
                 "test.exe"
             ],
-            "cwd": "${workspaceFolder}"
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "Build Packer"
         }
     ]
 }

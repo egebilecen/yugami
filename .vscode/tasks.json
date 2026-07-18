@@ -1,0 +1,20 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build Stub",
+            "type": "shell",
+            "command": "cargo build -p stub",
+            "group": "build",
+            "problemMatcher": ["$rustc"]
+        },
+        {
+            "label": "Build Packer",
+            "type": "shell",
+            "command": "cargo build -p packer",
+            "group": "build",
+            "dependsOn": ["Build Stub"],
+            "problemMatcher": ["$rustc"]
+        }
+    ]
+}
