@@ -98,18 +98,18 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
                 dprintln!(
                     "Faulting page is already decrypted. Querying memory region for its protection..."
                 );
+                let fault_page_addr = exception_fault_addr & !(PAGE_SIZE - 1);
 
-                if let Ok(result) = region::query(exception_fault_addr as *const u8) {
+                if let Ok(result) = region::query(fault_page_addr as *const u8) {
                     if result.protection() != protection {
                         dprintln!(
                             "Faulting page's protection is different than the overriden protection. Updating..."
                         );
 
                         unsafe {
-                            let page_base_addr = exception_fault_addr & !(PAGE_SIZE - 1);
 
                             if let Ok(_) =
-                                region::protect(page_base_addr as *const u8, PAGE_SIZE, protection)
+                                region::protect(fault_page_addr as *const u8, PAGE_SIZE, protection)
                             {
                                 dprintln!(
                                     "Successfully updated page protection to {}.",
