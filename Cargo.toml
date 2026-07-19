@@ -6,3 +6,8 @@ members = ["debug", "kekkai", "packer", "proc_macros", "stub"]
 debug = { path = "debug" }
 kekkai = { path = "kekkai" }
 proc_macros = { path = "proc_macros" }
+
+[profile.release]
+debug = "none"
+strip = "symbols"
+panic = "abort"

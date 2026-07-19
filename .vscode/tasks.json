@@ -6,30 +6,52 @@
             "type": "shell",
             "command": "cargo build -p stub",
             "group": "build",
-            "problemMatcher": ["$rustc"]
+            "problemMatcher": [
+                "$rustc"
+            ]
         },
         {
             "label": "Build Packer",
             "type": "shell",
             "command": "cargo build -p packer",
             "group": "build",
-            "dependsOn": ["Build Stub"],
-            "problemMatcher": ["$rustc"]
+            "dependsOn": [
+                "Build Stub"
+            ],
+            "problemMatcher": [
+                "$rustc"
+            ]
         },
         {
             "label": "Build Stub (Release)",
             "type": "shell",
             "command": "cargo build -p stub --release",
+            "options": {
+                "env": {
+                    "RUSTFLAGS": "-C link-arg=/DEBUG:NONE"
+                }
+            },
             "group": "build",
-            "problemMatcher": ["$rustc"]
+            "problemMatcher": [
+                "$rustc"
+            ]
         },
         {
             "label": "Build Packer (Release)",
             "type": "shell",
             "command": "cargo build -p packer --release",
+            "options": {
+                "env": {
+                    "RUSTFLAGS": "-C link-arg=/DEBUG:NONE"
+                }
+            },
             "group": "build",
-            "dependsOn": ["Build Stub (Release)"],
-            "problemMatcher": ["$rustc"]
+            "dependsOn": [
+                "Build Stub (Release)"
+            ],
+            "problemMatcher": [
+                "$rustc"
+            ]
         }
     ]
 }
