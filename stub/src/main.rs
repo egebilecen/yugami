@@ -67,14 +67,6 @@ fn run() -> Result<(), Box<dyn Error>> {
     dprintln!("IAT RVA: {}", payload_info.iat_rva);
     dprintln!("IAT size: {}", payload_info.iat_size);
 
-    // ─── Register VEH ────────────────────────────────────────────────────
-    unsafe {
-        let handle = AddVectoredExceptionHandler(1, Some(page_fault_handler));
-        if handle.is_null() {
-            return Err(xor_string!("Failed to register VEH!").into());
-        }
-    }
-
     // ─── Copy Payload To Memory ──────────────────────────────────────────
     let payload = &overlay[size_of::<PayloadInfo>()..];
     dprintln!("Payload size: {} (0x{:02X})", payload.len(), payload.len());
@@ -118,18 +110,27 @@ fn run() -> Result<(), Box<dyn Error>> {
             payload_base_addr as *mut _,
             payload.len(),
         );
-    }
 
-    // ─── Resolve IAT ─────────────────────────────────────────────────────
-    dprintln!("Resolving IAT...");
-
-    unsafe {
         region::protect::<u8>(payload_base_addr as *mut _, payload.len(), Protection::NONE)
             .map_err(|_| {
                 xor_string!("Couldn't update protection level of allocated payload region!")
                     .to_string()
             })?
     }
+
+    // ─── Register VEH ────────────────────────────────────────────────────
+    // VEH should be registered after payload is copied to memory. Because,
+    // if a page fault occurs at the payload memory region before the payload
+    // is copied, page fault handler will just decrypt empty memory.
+    unsafe {
+        let handle = AddVectoredExceptionHandler(1, Some(page_fault_handler));
+        if handle.is_null() {
+            return Err(xor_string!("Failed to register VEH!").into());
+        }
+    }
+
+    // ─── Resolve IAT ─────────────────────────────────────────────────────
+    dprintln!("Resolving IAT...");
 
     let payload_pe = unsafe {
         parse_portable_executable(slice::from_raw_parts(

@@ -10,7 +10,7 @@ use windows_sys::Win32::{
 };
 
 use crate::phase::StubPhase;
-use debug::{dprintln, print_bytes};
+use debug::dprintln;
 use kekkai::crypto::{PAGE_SIZE, U8_32, decrypt_page, derive_page_key, encrypt_page};
 use proc_macros::xor_string;
 
@@ -19,7 +19,7 @@ pub(crate) static PAYLOAD_START_ADDR: OnceLock<usize> = OnceLock::new();
 pub(crate) static PAYLOAD_END_ADDR: OnceLock<usize> = OnceLock::new();
 pub(crate) static CURRENT_STUB_PHASE: RwLock<StubPhase> = RwLock::new(StubPhase::None);
 
-const MAX_DECRYPTED_PAGES: usize = 2;
+const MAX_DECRYPTED_PAGES: usize = 4;
 static DECRYPTED_PAGES: OnceLock<Mutex<Vec<usize>>> = OnceLock::new();
 
 // Temporary shadowing to disable debug logs.
@@ -69,7 +69,7 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
     // ─── Handle Exception ────────────────────────────────────────────────
     match exception_record.ExceptionCode {
         EXCEPTION_ACCESS_VIOLATION => {
-            dprintln!("Exception data address: 0x{:02X}", exception_fault_addr);
+            dprintln!("Exception fault address: 0x{:02X}", exception_fault_addr);
 
             // ─── Check If Exception Occured In Payload Memory Region ─────────────
             if exception_fault_addr < payload_start_addr || exception_fault_addr > payload_end_addr
