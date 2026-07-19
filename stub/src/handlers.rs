@@ -13,9 +13,7 @@ use windows_sys::Win32::{
     },
 };
 
-use kekkai::crypto::{
-    PAGE_SIZE, U8_32, decrypt_page, derive_page_key, encrypt_page,
-};
+use kekkai::crypto::{PAGE_SIZE, U8_32, decrypt_page, derive_page_key, encrypt_page};
 
 pub(crate) static BASE_KEY: OnceLock<U8_32> = OnceLock::new();
 pub(crate) static PAYLOAD_START_ADDR: OnceLock<usize> = OnceLock::new();
@@ -66,7 +64,8 @@ pub(crate) unsafe extern "system" fn page_fault_handler(
             dprintln!("Exception data address: 0x{:02X}", exception_fault_addr);
 
             // ─── Check If Exception Occured In Payload Memory Region ─────────────
-            if exception_fault_addr < payload_start_addr || exception_fault_addr > payload_end_addr {
+            if exception_fault_addr < payload_start_addr || exception_fault_addr > payload_end_addr
+            {
                 dprintln!("Page fault didn't occur in payload memory region. Skipping...");
                 return EXCEPTION_CONTINUE_SEARCH;
             }
@@ -85,16 +84,34 @@ pub(crate) unsafe extern "system" fn page_fault_handler(
 
             // ─── Encrypt Previous Pages ──────────────────────────
             decrpyted_pages.retain(|i| {
+                dprintln!("Re-encrypting page at index {}...", i);
+
                 let prev_page_addr = payload_start_addr + (i * PAGE_SIZE);
                 derive_page_key(base_key, *i, &mut page_key);
+                dprintln!("Derived key to re-encrypt page...");
 
                 unsafe {
+                    if let Err(_) = region::protect::<u8>(
+                        prev_page_addr as *const _,
+                        PAGE_SIZE,
+                        Protection::READ_WRITE,
+                    ) {
+                        dprintln!("Failed to update memory protection for previous page! (1)");
+                        return true;
+                    }
+
                     encrypt_page(
                         slice::from_raw_parts_mut::<u8>(prev_page_addr as *mut _, PAGE_SIZE)
                             .try_into()
                             .unwrap(),
                         &page_key,
                     );
+
+                    if let Err(_) =
+                        region::protect::<u8>(prev_page_addr as *mut _, PAGE_SIZE, Protection::NONE)
+                    {
+                        dprintln!("Failed to update memory protection for previous page! (2)");
+                    }
                 }
 
                 dprintln!("Re-encrypted page at index {}.", i);
