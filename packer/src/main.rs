@@ -69,38 +69,95 @@ fn run(args: CliArgs) -> Result<(), Box<dyn Error>> {
         return Err(format!("No such file found in given path: {}", args.path).into());
     }
 
-    let mut payload = fs::read(&args.path)
+    let raw_payload = fs::read(&args.path)
         .map_err(|err| format!("Couldn't read file `{}`: {}", args.path, err))?;
-    dprintln!("Payload size: {}", payload.len());
+    dprintln!("Raw payload size: {}", raw_payload.len());
 
     // ─── Extract PE Information From Payload ─────────────────────────────
-    let pe = parse_portable_executable(&payload)
-        .map_err(|err| format!("Couldn't parse the PE file: {}", err))?;
+    let pe = parse_portable_executable(&raw_payload)
+        .map_err(|err| format!("Couldn't parse the PE headers of payload: {}", err))?;
 
-    let (iat_rva, iat_size, entry_point_rva) = if let Some(opt_header) = pe.optional_header_64 {
-        let iat = opt_header.data_directories.import_address_table;
-        (
-            iat.virtual_address,
-            iat.size,
-            opt_header.address_of_entry_point,
-        )
-    } else if let Some(opt_header) = pe.optional_header_32 {
-        let iat = opt_header.data_directories.import_address_table;
-        (
-            iat.virtual_address,
-            iat.size,
-            opt_header.address_of_entry_point,
-        )
-    } else {
-        spinner.finish_and_clear();
-        return Err("Couldn't find IAT RVA.".into());
-    };
+    let (iat_rva, iat_size, entry_point_rva, image_size, header_size) =
+        if let Some(opt_header) = pe.optional_header_64 {
+            let iat = opt_header.data_directories.import_address_table;
+            (
+                iat.virtual_address,
+                iat.size,
+                opt_header.address_of_entry_point,
+                opt_header.size_of_image,
+                opt_header.size_of_headers,
+            )
+        } else if let Some(opt_header) = pe.optional_header_32 {
+            let iat = opt_header.data_directories.import_address_table;
+            (
+                iat.virtual_address,
+                iat.size,
+                opt_header.address_of_entry_point,
+                opt_header.size_of_image,
+                opt_header.size_of_headers,
+            )
+        } else {
+            spinner.finish_and_clear();
+            return Err("Couldn't find IAT RVA.".into());
+        };
 
+    dprintln!("Image size: {}", image_size);
+    dprintln!("Header size: {}", header_size);
     dprintln!("Entry point RVA: 0x{:02X}", entry_point_rva);
     dprintln!("IAT RVA: {}", iat_rva);
     dprintln!("IAT size: {}", iat_size);
 
     thread::sleep(sleep_dur);
+
+    // ─── Map Payload Layout ──────────────────────────────────────────────
+    spinner.set_message("Mapping payload layout...");
+    let mut mapped_payload = vec![0u8; image_size as usize];
+
+    spinner.set_message("Mapping payload layout (header)...");
+    mapped_payload[0..header_size as usize].copy_from_slice(&raw_payload[0..header_size as usize]);
+
+    for section in pe.section_table {
+        if section.pointer_to_raw_data == 0 || section.size_of_raw_data == 0 {
+            continue;
+        }
+
+        let section_name = section_name_to_str(&section.name);
+        spinner.set_message(format!(
+            "Mapping payload layout (section {})...",
+            section_name
+        ));
+
+        dprintln!("Section name: {}", section_name);
+        dprintln!(
+            "Section file RVA: 0x{:02X} ({})",
+            section.pointer_to_raw_data,
+            section.pointer_to_raw_data
+        );
+        dprintln!(
+            "Section file size: {} (0x{:02X})",
+            section.size_of_raw_data,
+            section.size_of_raw_data
+        );
+        dprintln!(
+            "Section RVA: 0x{:02X} ({})",
+            section.virtual_address,
+            section.virtual_address
+        );
+        dprintln!(
+            "Section virtual size: {} (0x{:02X})",
+            section.virtual_size,
+            section.virtual_size
+        );
+
+        let start_rva = section.virtual_address as usize;
+        let end_rva = start_rva + section.virtual_size as usize;
+
+        let start_file_offset = section.pointer_to_raw_data as usize;
+        let end_file_offset = start_file_offset + section.virtual_size as usize;
+
+        mapped_payload[start_rva..end_rva]
+            .copy_from_slice(&raw_payload[start_file_offset..end_file_offset]);
+    }
 
     // ─── Encrypt The Payload ─────────────────────────────────────────────
     spinner.set_message("Encrypting the payload...");
@@ -115,11 +172,11 @@ fn run(args: CliArgs) -> Result<(), Box<dyn Error>> {
         base_key.map(|b| format!("{:02X}", b)).join(" ")
     );
 
-    let prev_payload_size = payload.len();
-    encrypt_payload(&mut payload, base_key);
+    let prev_payload_size = mapped_payload.len();
+    encrypt_payload(&mut mapped_payload, base_key);
     dprintln!(
-        "Payload is padded by {} bytes.",
-        payload.len() - prev_payload_size
+        "Mapped payload is padded by {} bytes.",
+        mapped_payload.len() - prev_payload_size
     );
 
     thread::sleep(sleep_dur);
@@ -138,11 +195,11 @@ fn run(args: CliArgs) -> Result<(), Box<dyn Error>> {
     dprintln!("Payload info size: {}", payload_info_bytes.len());
     dprintln!(
         "Total overlay size: {}",
-        payload_info_bytes.len() + payload.len()
+        payload_info_bytes.len() + mapped_payload.len()
     );
 
     stub.extend_from_slice(payload_info_bytes);
-    stub.extend_from_slice(&payload);
+    stub.extend_from_slice(&mapped_payload);
 
     thread::sleep(sleep_dur);
 
@@ -155,6 +212,17 @@ fn run(args: CliArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn section_name_to_str(buf: &[u8; 8]) -> &str {
+    std::str::from_utf8(match buf.iter().position(|b| *b == 0x00) {
+        Some(i) => &buf[..i],
+        None => buf,
+    })
+    .unwrap_or("<error>")
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                    Main                                    */
+/* -------------------------------------------------------------------------- */
 fn main() -> ExitCode {
     println!("{}", BANNER);
     let args: CliArgs = argh::from_env();
