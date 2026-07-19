@@ -18,6 +18,7 @@ use crate::handlers::{
 };
 use crate::phase::StubPhase;
 use crate::resolvers::import_dir::resolve_imports;
+use crate::resolvers::reloc::resolve_relocations;
 use debug::dprintln;
 use kekkai::payload::PayloadInfo;
 use proc_macros::xor_string;
@@ -28,10 +29,10 @@ fn run() -> Result<(), Box<dyn Error>> {
     let exe_bytes = fs::read(&exe_path)?;
 
     // ─── Find The Last Section ───────────────────────────────────────────
-    let pe = parse_portable_executable(&exe_bytes)?;
+    let stub_pe = parse_portable_executable(&exe_bytes)?;
     let mut highest_section_offset = 0_usize;
 
-    for section in pe.section_table {
+    for section in &stub_pe.section_table {
         let section_end = section.pointer_to_raw_data + section.size_of_raw_data;
         highest_section_offset = max(section_end as usize, highest_section_offset);
     }
@@ -149,9 +150,23 @@ fn run() -> Result<(), Box<dyn Error>> {
             })?
     }
 
-    let (import_table_rva, import_table_size) =
+    let (preferred_image_base, import_table_rva, import_table_size) =
         if let Some(opt_header) = payload_pe.optional_header_64 {
+            let iat = opt_header.data_directories.import_address_table;
+            dprintln!(
+                "Entry point RVA: 0x{:02X} ({})",
+                opt_header.address_of_entry_point,
+                opt_header.address_of_entry_point
+            );
+            dprintln!(
+                "IAT RVA: 0x{:02X} ({})",
+                iat.virtual_address,
+                iat.virtual_address
+            );
+            dprintln!("IAT size: {} (0x{:02X})", iat.size, iat.size);
+
             (
+                opt_header.image_base,
                 opt_header.data_directories.import_table.virtual_address,
                 opt_header.data_directories.import_table.size,
             )
@@ -164,13 +179,30 @@ fn run() -> Result<(), Box<dyn Error>> {
     *CURRENT_STUB_PHASE.write()? = StubPhase::ImportResolving;
 
     if let Err(err) = resolve_imports(payload_base_addr, import_table_rva, import_table_size) {
-        let mut temp = xor_string!("An error occured while resolving imports: ");
+        let mut temp = xor_string!("An error occurred while resolving imports: ");
         temp += err.as_str();
 
-        return Err(format!("{}", temp).into());
+        return Err(temp.into());
     }
 
-    *CURRENT_STUB_PHASE.write()? = StubPhase::None;
+    // ─── Resolve Relocations ─────────────────────────────────────────────
+    *CURRENT_STUB_PHASE.write()? = StubPhase::RelocationResolving;
+
+    if let Some(reloc_section) = (&payload_pe.section_table).iter().find(|e| {
+        e.get_name().unwrap_or("".to_string()).trim_matches('\0') == xor_string!(".reloc")
+    }) {
+        if let Err(err) = resolve_relocations(payload_base_addr, preferred_image_base as usize, reloc_section) {
+            let mut temp = xor_string!("An error occurred while resolving relocations: ");
+            temp += err.as_str();
+
+            return Err(temp.into());
+        }
+    } else {
+        dprintln!("No relocation section found. Skipping resolving relocations...");
+    }
+
+    // ─── Update Section Protections ──────────────────────────────────────
+    // TODO: Use characteristics.
 
     // ─── Run Payload ─────────────────────────────────────────────────────
     // unsafe {

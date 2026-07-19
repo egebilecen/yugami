@@ -2,5 +2,6 @@
 pub(crate) enum StubPhase {
     None,
     LoadingPayload,
-    ImportResolving
+    ImportResolving,
+    RelocationResolving
 }

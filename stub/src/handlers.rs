@@ -19,7 +19,7 @@ pub(crate) static PAYLOAD_START_ADDR: OnceLock<usize> = OnceLock::new();
 pub(crate) static PAYLOAD_END_ADDR: OnceLock<usize> = OnceLock::new();
 pub(crate) static CURRENT_STUB_PHASE: RwLock<StubPhase> = RwLock::new(StubPhase::None);
 
-const MAX_DECRYPTED_PAGES: usize = 4;
+const MAX_DECRYPTED_PAGES: usize = 2;
 static DECRYPTED_PAGES: OnceLock<Mutex<Vec<usize>>> = OnceLock::new();
 
 // Temporary shadowing to disable debug logs.
@@ -71,7 +71,7 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
         EXCEPTION_ACCESS_VIOLATION => {
             dprintln!("Exception fault address: 0x{:02X}", exception_fault_addr);
 
-            // ─── Check If Exception Occured In Payload Memory Region ─────────────
+            // ─── Check If Exception Occurred In Payload Memory Region ────────────
             if exception_fault_addr < payload_start_addr || exception_fault_addr > payload_end_addr
             {
                 dprintln!("Page fault didn't occur in payload memory region. Skipping...");
@@ -89,7 +89,9 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
             dprintln!("Page addr: 0x{:02X}", page_addr);
 
             let current_phase_protection = match stub_phase {
-                StubPhase::LoadingPayload | StubPhase::ImportResolving => Protection::READ_WRITE,
+                StubPhase::LoadingPayload
+                | StubPhase::ImportResolving
+                | StubPhase::RelocationResolving => Protection::READ_WRITE,
                 StubPhase::None => Protection::READ_EXECUTE,
             };
 
