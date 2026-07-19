@@ -9,7 +9,6 @@ use windows_sys::Win32::{
     },
 };
 
-use crate::phase::StubPhase;
 use debug::dprintln;
 use kekkai::crypto::{PAGE_SIZE, U8_32, decrypt_page, derive_page_key, encrypt_page};
 use proc_macros::xor_string;
@@ -17,7 +16,7 @@ use proc_macros::xor_string;
 pub(crate) static BASE_KEY: OnceLock<U8_32> = OnceLock::new();
 pub(crate) static PAYLOAD_START_ADDR: OnceLock<usize> = OnceLock::new();
 pub(crate) static PAYLOAD_END_ADDR: OnceLock<usize> = OnceLock::new();
-pub(crate) static CURRENT_STUB_PHASE: RwLock<StubPhase> = RwLock::new(StubPhase::None);
+pub(crate) static PROTECTION_OVERRIDE: RwLock<Option<Protection>> = RwLock::new(None);
 
 const MAX_DECRYPTED_PAGES: usize = 2;
 static DECRYPTED_PAGES: OnceLock<Mutex<Vec<usize>>> = OnceLock::new();
@@ -78,9 +77,6 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
                 return Ok(EXCEPTION_CONTINUE_SEARCH);
             }
 
-            let stub_phase = *CURRENT_STUB_PHASE
-                .read()
-                .map_err(|_| xor_string!("Couldn't get lock!"))?;
             let page_addr = exception_fault_addr & !(PAGE_SIZE - 1);
             let page_index = (page_addr - payload_start_addr) / PAGE_SIZE;
             let mut page_key: U8_32 = [0u8; 32];
@@ -88,11 +84,14 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
             dprintln!("Page index: {}", page_index);
             dprintln!("Page addr: 0x{:02X}", page_addr);
 
-            let current_phase_protection = match stub_phase {
-                StubPhase::LoadingPayload
-                | StubPhase::ImportResolving
-                | StubPhase::RelocationResolving => Protection::READ_WRITE,
-                StubPhase::None => Protection::READ_EXECUTE,
+            let protection = if let Some(val) = *(PROTECTION_OVERRIDE
+                .read()
+                .map_err(|_| xor_string!("Couldn't get lock!"))?)
+            {
+                dprintln!("~~~ Protection override is set, which is {} ~~~", val);
+                val
+            } else {
+                Protection::READ_EXECUTE
             };
 
             if decrpyted_pages.contains(&page_index) {
@@ -101,22 +100,20 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
                 );
 
                 if let Ok(result) = region::query(exception_fault_addr as *const u8) {
-                    if result.protection() != current_phase_protection {
+                    if result.protection() != protection {
                         dprintln!(
-                            "Faulting page's protection is different than the expected protection for current phase. Updating..."
+                            "Faulting page's protection is different than the overriden protection. Updating..."
                         );
 
                         unsafe {
                             let page_base_addr = exception_fault_addr & !(PAGE_SIZE - 1);
 
-                            if let Ok(_) = region::protect(
-                                page_base_addr as *const u8,
-                                PAGE_SIZE,
-                                current_phase_protection,
-                            ) {
+                            if let Ok(_) =
+                                region::protect(page_base_addr as *const u8, PAGE_SIZE, protection)
+                            {
                                 dprintln!(
                                     "Successfully updated page protection to {}.",
-                                    current_phase_protection
+                                    protection
                                 );
                                 return Ok(EXCEPTION_CONTINUE_EXECUTION);
                             } else {
@@ -207,14 +204,11 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
                 dprintln!(
                     "Updating protection level of page {} to {}.",
                     page_index,
-                    current_phase_protection
+                    protection
                 );
 
-                if let Err(_) = region::protect::<u8>(
-                    page_addr as *const _,
-                    PAGE_SIZE,
-                    current_phase_protection,
-                ) {
+                if let Err(_) = region::protect::<u8>(page_addr as *const _, PAGE_SIZE, protection)
+                {
                     dprintln!("Failed to update memory protection on faulting page!");
                     return Ok(EXCEPTION_CONTINUE_SEARCH);
                 }

@@ -1,5 +1,4 @@
 mod handlers;
-mod phase;
 mod resolvers;
 
 use core::slice;
@@ -14,9 +13,8 @@ use region::Protection;
 use windows_sys::Win32::System::Diagnostics::Debug::AddVectoredExceptionHandler;
 
 use crate::handlers::{
-    BASE_KEY, CURRENT_STUB_PHASE, PAYLOAD_END_ADDR, PAYLOAD_START_ADDR, page_fault_handler,
+    BASE_KEY, PROTECTION_OVERRIDE, PAYLOAD_END_ADDR, PAYLOAD_START_ADDR, page_fault_handler,
 };
-use crate::phase::StubPhase;
 use crate::resolvers::import_dir::resolve_imports;
 use crate::resolvers::reloc::resolve_relocations;
 use debug::dprintln;
@@ -88,8 +86,6 @@ fn run() -> Result<(), Box<dyn Error>> {
         })?
     }
 
-    *CURRENT_STUB_PHASE.write()? = StubPhase::LoadingPayload;
-
     PAYLOAD_START_ADDR
         .set(payload_base_addr)
         .map_err(|_| xor_string!("Couldn't set payload start address!").to_string())?;
@@ -126,6 +122,11 @@ fn run() -> Result<(), Box<dyn Error>> {
             return Err(xor_string!("Failed to register VEH!").into());
         }
     }
+
+    // Override protection to READ/WRITE as next phases will be updating
+    // some memory regions of the payload. So if we get any page fault,
+    // it won't default to READ/EXECUTE protection.
+    *PROTECTION_OVERRIDE.write()? = Some(Protection::READ_WRITE);
 
     // ─── Resolve IAT ─────────────────────────────────────────────────────
     dprintln!("Resolving IAT...");
@@ -176,8 +177,6 @@ fn run() -> Result<(), Box<dyn Error>> {
             return Err(xor_string!("Couldn't find optional header in the payload PE!").into());
         };
 
-    *CURRENT_STUB_PHASE.write()? = StubPhase::ImportResolving;
-
     if let Err(err) = resolve_imports(payload_base_addr, import_table_rva, import_table_size) {
         let mut temp = xor_string!("An error occurred while resolving imports: ");
         temp += err.as_str();
@@ -186,8 +185,6 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
 
     // ─── Resolve Relocations ─────────────────────────────────────────────
-    *CURRENT_STUB_PHASE.write()? = StubPhase::RelocationResolving;
-
     if let Some(reloc_section) = (&payload_pe.section_table).iter().find(|e| {
         e.get_name().unwrap_or("".to_string()).trim_matches('\0') == xor_string!(".reloc")
     }) {
@@ -201,10 +198,9 @@ fn run() -> Result<(), Box<dyn Error>> {
         dprintln!("No relocation section found. Skipping resolving relocations...");
     }
 
-    // ─── Update Section Protections ──────────────────────────────────────
-    // TODO: Use characteristics.
-
     // ─── Run Payload ─────────────────────────────────────────────────────
+    *PROTECTION_OVERRIDE.write()? = None;
+
     // unsafe {
     //     let payload_entry_point = payload_base_addr + payload_info.entry_point_rva as usize;
     //     let payload_code: extern "C" fn() -> i32 = std::mem::transmute(payload_entry_point);
