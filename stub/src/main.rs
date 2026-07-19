@@ -1,5 +1,7 @@
 mod handlers;
+mod resolvers;
 
+use core::slice;
 use std::cmp::max;
 use std::error::Error;
 use std::fs;
@@ -11,6 +13,7 @@ use region::Protection;
 use windows_sys::Win32::System::Diagnostics::Debug::AddVectoredExceptionHandler;
 
 use crate::handlers::{BASE_KEY, PAYLOAD_END_ADDR, PAYLOAD_START_ADDR, page_fault_handler};
+use crate::resolvers::import_dir::resolve_imports;
 use debug::dprintln;
 use kekkai::payload::PayloadInfo;
 use proc_macros::xor_string;
@@ -103,18 +106,42 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    // ─── Run Payload ─────────────────────────────────────────────────────
-    unsafe {
-        let payload_entry_point = payload_base_addr + payload_info.entry_point_rva as usize;
-        let payload_code: extern "C" fn() = std::mem::transmute(payload_entry_point);
+    // ─── Resolve IAT ─────────────────────────────────────────────────────
+    dprintln!("Resolving IAT...");
 
-        payload_code();
-    }
+    let payload_pe = unsafe {
+        parse_portable_executable(slice::from_raw_parts(
+            payload_base_addr as *const u8,
+            payload.len(),
+        ))
+        .map_err(|_| xor_string!("Couldn't parse the payload PE!").to_string())?
+    };
+
+    let (import_table_rva, import_table_size) = if let Some(opt_header) = payload_pe.optional_header_64 {
+        (opt_header.data_directories.import_table.virtual_address, opt_header.data_directories.import_table.size)
+    } else if let Some(opt_header) = payload_pe.optional_header_32 {
+        (opt_header.data_directories.import_table.virtual_address, opt_header.data_directories.import_table.size)
+    } else {
+        return Err(xor_string!("Couldn't find optional header in the payload PE!").into());
+    };
+
+    resolve_imports(payload_base_addr, import_table_rva, import_table_size);
+
+    // ─── Run Payload ─────────────────────────────────────────────────────
+    // unsafe {
+    //     let payload_entry_point = payload_base_addr + payload_info.entry_point_rva as usize;
+    //     let payload_code: extern "C" fn() -> i32 = std::mem::transmute(payload_entry_point);
+
+    //     payload_code();
+    // }
 
     // ─── End ─────────────────────────────────────────────────────────────
     Ok(())
 }
 
+/* -------------------------------------------------------------------------- */
+/*                                    Main                                    */
+/* -------------------------------------------------------------------------- */
 fn main() -> ExitCode {
     if let Err(error) = run() {
         println!("{}", error);

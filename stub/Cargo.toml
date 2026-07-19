@@ -16,5 +16,7 @@ windows-sys = {
     "Win32_System",
     "Win32_System_Kernel",
     "Win32_System_Diagnostics_Debug",
+    "Win32_System_Services",
+    "Win32_System_SystemServices"
   ]
 }

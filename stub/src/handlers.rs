@@ -20,6 +20,11 @@ pub(crate) static PAYLOAD_START_ADDR: OnceLock<usize> = OnceLock::new();
 pub(crate) static PAYLOAD_END_ADDR: OnceLock<usize> = OnceLock::new();
 static DECRYPTED_PAGES: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
 
+// Temporary shadowing to disable debug logs.
+macro_rules! dprintln {
+    ($($tt:tt)*) => {};
+}
+
 pub(crate) unsafe extern "system" fn page_fault_handler(
     exception_info: *mut EXCEPTION_POINTERS,
 ) -> i32 {
