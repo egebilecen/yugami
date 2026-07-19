@@ -1,10 +1,6 @@
 use core::slice;
-use std::{
-    collections::HashSet,
-    sync::{Mutex, OnceLock},
-};
+use std::sync::{Mutex, OnceLock, RwLock};
 
-use debug::dprintln;
 use region::Protection;
 use windows_sys::Win32::{
     Foundation::EXCEPTION_ACCESS_VIOLATION,
@@ -13,24 +9,31 @@ use windows_sys::Win32::{
     },
 };
 
+use crate::phase::StubPhase;
+use debug::{dprintln, print_bytes};
 use kekkai::crypto::{PAGE_SIZE, U8_32, decrypt_page, derive_page_key, encrypt_page};
+use proc_macros::xor_string;
 
 pub(crate) static BASE_KEY: OnceLock<U8_32> = OnceLock::new();
 pub(crate) static PAYLOAD_START_ADDR: OnceLock<usize> = OnceLock::new();
 pub(crate) static PAYLOAD_END_ADDR: OnceLock<usize> = OnceLock::new();
-static DECRYPTED_PAGES: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
+pub(crate) static CURRENT_STUB_PHASE: RwLock<StubPhase> = RwLock::new(StubPhase::None);
+
+const MAX_DECRYPTED_PAGES: usize = 2;
+static DECRYPTED_PAGES: OnceLock<Mutex<Vec<usize>>> = OnceLock::new();
 
 // Temporary shadowing to disable debug logs.
-macro_rules! dprintln {
-    ($($tt:tt)*) => {};
-}
+// macro_rules! dprintln {
+//     ($($tt:tt)*) => {};
+// }
 
-pub(crate) unsafe extern "system" fn page_fault_handler(
-    exception_info: *mut EXCEPTION_POINTERS,
-) -> i32 {
+#[inline]
+fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, String> {
+    dprintln!(">>> Exception handler invoked! <<<");
+
     // ─── Variables ───────────────────────────────────────────────────────
     let mut decrpyted_pages = match DECRYPTED_PAGES
-        .get_or_init(|| Mutex::new(HashSet::new()))
+        .get_or_init(|| Mutex::new(Vec::with_capacity(MAX_DECRYPTED_PAGES)))
         .lock()
     {
         Ok(data) => data,
@@ -40,7 +43,7 @@ pub(crate) unsafe extern "system" fn page_fault_handler(
         key
     } else {
         dprintln!("Base key is not set! Skipping page fault handler...");
-        return EXCEPTION_CONTINUE_SEARCH;
+        return Ok(EXCEPTION_CONTINUE_SEARCH);
     };
     let (payload_start_addr, payload_end_addr) = if let Some(start_addr) = PAYLOAD_START_ADDR.get()
         && let Some(end_addr) = PAYLOAD_END_ADDR.get()
@@ -48,13 +51,12 @@ pub(crate) unsafe extern "system" fn page_fault_handler(
         (start_addr.to_owned(), end_addr.to_owned())
     } else {
         dprintln!("Payload start or end address is not set! Skipping page fault handler...");
-        return EXCEPTION_CONTINUE_SEARCH;
+        return Ok(EXCEPTION_CONTINUE_SEARCH);
     };
     let exception_record = unsafe { exception_info.read().ExceptionRecord.read() };
     let exception_location = exception_record.ExceptionAddress as usize;
     let exception_fault_addr = exception_record.ExceptionInformation[1];
 
-    dprintln!(">>> Exception handler invoked! <<<");
     dprintln!(
         "Exception code: 0x{:02X}",
         exception_record.ExceptionCode as usize
@@ -62,6 +64,7 @@ pub(crate) unsafe extern "system" fn page_fault_handler(
     dprintln!("Exception location: 0x{:02X}", exception_location);
     dprintln!("Payload start address: 0x{:02X}", payload_start_addr);
     dprintln!("Payload end address: 0x{:02X}", payload_end_addr);
+    dprintln!("Currently decrypted pages: {:?}", decrpyted_pages);
 
     // ─── Handle Exception ────────────────────────────────────────────────
     match exception_record.ExceptionCode {
@@ -72,9 +75,12 @@ pub(crate) unsafe extern "system" fn page_fault_handler(
             if exception_fault_addr < payload_start_addr || exception_fault_addr > payload_end_addr
             {
                 dprintln!("Page fault didn't occur in payload memory region. Skipping...");
-                return EXCEPTION_CONTINUE_SEARCH;
+                return Ok(EXCEPTION_CONTINUE_SEARCH);
             }
 
+            let stub_phase = *CURRENT_STUB_PHASE
+                .read()
+                .map_err(|_| xor_string!("Couldn't get lock!"))?;
             let page_addr = exception_fault_addr & !(PAGE_SIZE - 1);
             let page_index = (page_addr - payload_start_addr) / PAGE_SIZE;
             let mut page_key: U8_32 = [0u8; 32];
@@ -84,15 +90,18 @@ pub(crate) unsafe extern "system" fn page_fault_handler(
 
             if decrpyted_pages.contains(&page_index) {
                 dprintln!("Faulting page is already decrypted. Skipping...");
-                return EXCEPTION_CONTINUE_SEARCH;
+                return Ok(EXCEPTION_CONTINUE_SEARCH);
             }
 
             // ─── Encrypt Previous Pages ──────────────────────────
-            decrpyted_pages.retain(|i| {
-                dprintln!("Re-encrypting page at index {}...", i);
+            if decrpyted_pages.len() >= MAX_DECRYPTED_PAGES {
+                dprintln!("Max decrypted pages limit reached!");
 
-                let prev_page_addr = payload_start_addr + (i * PAGE_SIZE);
-                derive_page_key(base_key, *i, &mut page_key);
+                let prev_page_index = decrpyted_pages[0];
+                dprintln!("Re-encrypting page {}...", prev_page_index);
+
+                let prev_page_addr = payload_start_addr + (prev_page_index * PAGE_SIZE);
+                derive_page_key(base_key, prev_page_index, &mut page_key);
                 dprintln!("Derived key to re-encrypt page...");
 
                 unsafe {
@@ -102,39 +111,41 @@ pub(crate) unsafe extern "system" fn page_fault_handler(
                         Protection::READ_WRITE,
                     ) {
                         dprintln!("Failed to update memory protection for previous page! (1)");
-                        return true;
-                    }
+                    } else {
+                        encrypt_page(
+                            slice::from_raw_parts_mut::<u8>(prev_page_addr as *mut _, PAGE_SIZE)
+                                .try_into()
+                                .unwrap(),
+                            &page_key,
+                        );
 
-                    encrypt_page(
-                        slice::from_raw_parts_mut::<u8>(prev_page_addr as *mut _, PAGE_SIZE)
-                            .try_into()
-                            .unwrap(),
-                        &page_key,
-                    );
-
-                    if let Err(_) =
-                        region::protect::<u8>(prev_page_addr as *mut _, PAGE_SIZE, Protection::NONE)
-                    {
-                        dprintln!("Failed to update memory protection for previous page! (2)");
+                        if let Err(_) = region::protect::<u8>(
+                            prev_page_addr as *mut _,
+                            PAGE_SIZE,
+                            Protection::NONE,
+                        ) {
+                            dprintln!("Failed to update memory protection for previous page! (2)");
+                        }
                     }
                 }
 
-                dprintln!("Re-encrypted page at index {}.", i);
-                false
-            });
+                dprintln!("Re-encrypted page {}.", prev_page_index);
+                decrpyted_pages.remove(0);
+            }
 
             // ─── Decrypt Current Page ────────────────────────────
             unsafe {
+                let protection = Protection::READ_WRITE;
                 dprintln!(
-                    "Updating protection level of page at index {} to READ/WRITE.",
-                    page_index
+                    "Updating protection level of page {} to {}.",
+                    page_index,
+                    protection
                 );
 
-                if let Err(_) =
-                    region::protect::<u8>(page_addr as *const _, PAGE_SIZE, Protection::READ_WRITE)
+                if let Err(_) = region::protect::<u8>(page_addr as *const _, PAGE_SIZE, protection)
                 {
                     dprintln!("Failed to update memory protection on faulting page!");
-                    return EXCEPTION_CONTINUE_SEARCH;
+                    return Ok(EXCEPTION_CONTINUE_SEARCH);
                 }
             }
 
@@ -152,28 +163,47 @@ pub(crate) unsafe extern "system" fn page_fault_handler(
                     &page_key,
                 );
             }
+            dprintln!("Decrypted page {}.", page_index);
 
             unsafe {
+                let protection = match stub_phase {
+                    StubPhase::LoadingPayload | StubPhase::ImportResolving => {
+                        Protection::READ_WRITE
+                    }
+                    StubPhase::None => Protection::READ_EXECUTE,
+                };
+
                 dprintln!(
-                    "Updating protection level of page at index {} to READ/EXECUTE.",
-                    page_index
+                    "Updating protection level of page {} to {}.",
+                    page_index,
+                    protection
                 );
 
-                if let Err(_) = region::protect::<u8>(
-                    page_addr as *const _,
-                    PAGE_SIZE,
-                    Protection::READ_EXECUTE,
-                ) {
+                if let Err(_) = region::protect::<u8>(page_addr as *const _, PAGE_SIZE, protection)
+                {
                     dprintln!("Failed to update memory protection on faulting page!");
-                    return EXCEPTION_CONTINUE_SEARCH;
+                    return Ok(EXCEPTION_CONTINUE_SEARCH);
                 }
             }
 
-            decrpyted_pages.insert(page_index);
+            decrpyted_pages.push(page_index);
 
             dprintln!("Continuing execution...");
-            EXCEPTION_CONTINUE_EXECUTION
+            Ok(EXCEPTION_CONTINUE_EXECUTION)
         }
-        _ => EXCEPTION_CONTINUE_SEARCH,
+        _ => Ok(EXCEPTION_CONTINUE_SEARCH),
     }
 }
+
+pub(crate) unsafe extern "system" fn page_fault_handler(
+    exception_info: *mut EXCEPTION_POINTERS,
+) -> i32 {
+    if let Ok(val) = _page_fault_handler(exception_info) {
+        val
+    } else {
+        // TODO: Print error.
+        EXCEPTION_CONTINUE_SEARCH
+    }
+}
+
+const _: () = assert!(MAX_DECRYPTED_PAGES >= 1);
