@@ -192,7 +192,7 @@ fn run(args: CliArgs) -> Result<(), Box<dyn Error>> {
     // ─── Add Payload As Overlay To Stub ──────────────────────────────────
     spinner.set_message("Appending target payload as PE overlay...");
 
-    let payload_info = PayloadInfo::new(base_key.to_owned(), entry_point_rva, iat_rva, iat_size);
+    let payload_info = PayloadInfo::new(base_key.to_owned());
     let payload_info_bytes = unsafe {
         slice::from_raw_parts(
             &payload_info as *const PayloadInfo as *const u8,

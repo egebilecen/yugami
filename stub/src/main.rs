@@ -63,9 +63,6 @@ fn run() -> Result<(), Box<dyn Error>> {
             .map(|b| format!("{:02X}", b))
             .join(" ")
     );
-    dprintln!("Entry point RVA: 0x{:02X}", payload_info.entry_point_rva);
-    dprintln!("IAT RVA: {}", payload_info.iat_rva);
-    dprintln!("IAT size: {}", payload_info.iat_size);
 
     // ─── Copy Payload To Memory ──────────────────────────────────────────
     let payload = &overlay[size_of::<PayloadInfo>()..];
