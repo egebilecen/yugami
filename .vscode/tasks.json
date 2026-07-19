@@ -15,6 +15,21 @@
             "group": "build",
             "dependsOn": ["Build Stub"],
             "problemMatcher": ["$rustc"]
+        },
+        {
+            "label": "Build Stub (Release)",
+            "type": "shell",
+            "command": "cargo build -p stub --release",
+            "group": "build",
+            "problemMatcher": ["$rustc"]
+        },
+        {
+            "label": "Build Packer (Release)",
+            "type": "shell",
+            "command": "cargo build -p packer --release",
+            "group": "build",
+            "dependsOn": ["Build Stub (Release)"],
+            "problemMatcher": ["$rustc"]
         }
     ]
 }

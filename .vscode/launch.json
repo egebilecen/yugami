@@ -25,7 +25,7 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Run",
+            "name": "Run (Debug)",
             "cargo": {
                 "args": [
                     "run",
@@ -42,6 +42,28 @@
             ],
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "Build Packer"
+        },
+                {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Run (Release)",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=packer",
+                    "--release"
+                ],
+                "filter": {
+                    "name": "packer",
+                    "kind": "bin"
+                }
+            },
+            "args": [
+                "--path",
+                "test.exe"
+            ],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "Build Packer (Release)"
         }
     ]
 }
