@@ -1,4 +1,5 @@
 mod handlers;
+mod phase;
 mod resolvers;
 
 use core::slice;
@@ -12,7 +13,10 @@ use pe_parser::pe::parse_portable_executable;
 use region::Protection;
 use windows_sys::Win32::System::Diagnostics::Debug::AddVectoredExceptionHandler;
 
-use crate::handlers::{BASE_KEY, PAYLOAD_END_ADDR, PAYLOAD_START_ADDR, page_fault_handler};
+use crate::handlers::{
+    BASE_KEY, CURRENT_STUB_PHASE, PAYLOAD_END_ADDR, PAYLOAD_START_ADDR, page_fault_handler,
+};
+use crate::phase::StubPhase;
 use crate::resolvers::import_dir::resolve_imports;
 use debug::dprintln;
 use kekkai::payload::PayloadInfo;
@@ -63,14 +67,38 @@ fn run() -> Result<(), Box<dyn Error>> {
     dprintln!("IAT RVA: {}", payload_info.iat_rva);
     dprintln!("IAT size: {}", payload_info.iat_size);
 
+    // ─── Register VEH ────────────────────────────────────────────────────
+    unsafe {
+        let handle = AddVectoredExceptionHandler(1, Some(page_fault_handler));
+        if handle.is_null() {
+            return Err(xor_string!("Failed to register VEH!").into());
+        }
+    }
+
     // ─── Copy Payload To Memory ──────────────────────────────────────────
     let payload = &overlay[size_of::<PayloadInfo>()..];
-    dprintln!("Payload size: {}", payload.len());
+    dprintln!("Payload size: {} (0x{:02X})", payload.len(), payload.len());
 
-    let payload_alloc = region::alloc(payload.len(), Protection::READ_WRITE).map_err(|_| {
+    let payload_alloc = region::alloc(payload.len(), Protection::NONE).map_err(|_| {
         xor_string!("Couldn't allocate memory region to store payload!").to_string()
     })?;
     let payload_base_addr = payload_alloc.as_ptr::<u8>() as usize;
+
+    // We could have set the protection as READ/WRITE to the `region::alloc`
+    // call above, however, debuggers are keeping record of initial protection
+    // of the allocated pages so we are setting it to READ/WRITE here.
+    unsafe {
+        region::protect::<u8>(
+            payload_base_addr as *mut _,
+            payload.len(),
+            Protection::READ_WRITE,
+        )
+        .map_err(|_| {
+            xor_string!("Couldn't update protection level of allocated payload region!").to_string()
+        })?
+    }
+
+    *CURRENT_STUB_PHASE.write()? = StubPhase::LoadingPayload;
 
     PAYLOAD_START_ADDR
         .set(payload_base_addr)
@@ -90,7 +118,12 @@ fn run() -> Result<(), Box<dyn Error>> {
             payload_base_addr as *mut _,
             payload.len(),
         );
+    }
 
+    // ─── Resolve IAT ─────────────────────────────────────────────────────
+    dprintln!("Resolving IAT...");
+
+    unsafe {
         region::protect::<u8>(payload_base_addr as *mut _, payload.len(), Protection::NONE)
             .map_err(|_| {
                 xor_string!("Couldn't update protection level of allocated payload region!")
@@ -98,34 +131,48 @@ fn run() -> Result<(), Box<dyn Error>> {
             })?
     }
 
-    // ─── Register VEH ────────────────────────────────────────────────────
-    unsafe {
-        let handle = AddVectoredExceptionHandler(1, Some(page_fault_handler));
-        if handle.is_null() {
-            return Err(xor_string!("Failed to register VEH!").into());
-        }
-    }
-
-    // ─── Resolve IAT ─────────────────────────────────────────────────────
-    dprintln!("Resolving IAT...");
-
     let payload_pe = unsafe {
         parse_portable_executable(slice::from_raw_parts(
             payload_base_addr as *const u8,
             payload.len(),
         ))
-        .map_err(|_| xor_string!("Couldn't parse the payload PE!").to_string())?
+        .map_err(|err| {
+            let mut temp = xor_string!("Couldn't parse the payload PE: ");
+            temp += err.to_string().as_str();
+            temp
+        })?
     };
 
-    let (import_table_rva, import_table_size) = if let Some(opt_header) = payload_pe.optional_header_64 {
-        (opt_header.data_directories.import_table.virtual_address, opt_header.data_directories.import_table.size)
-    } else if let Some(opt_header) = payload_pe.optional_header_32 {
-        (opt_header.data_directories.import_table.virtual_address, opt_header.data_directories.import_table.size)
-    } else {
-        return Err(xor_string!("Couldn't find optional header in the payload PE!").into());
-    };
+    unsafe {
+        region::protect::<u8>(payload_base_addr as *mut _, payload.len(), Protection::NONE)
+            .map_err(|_| {
+                xor_string!("Couldn't update protection level of allocated payload region!")
+                    .to_string()
+            })?
+    }
 
-    resolve_imports(payload_base_addr, import_table_rva, import_table_size);
+    let (import_table_rva, import_table_size) =
+        if let Some(opt_header) = payload_pe.optional_header_64 {
+            (
+                opt_header.data_directories.import_table.virtual_address,
+                opt_header.data_directories.import_table.size,
+            )
+        } else if let Some(_) = payload_pe.optional_header_32 {
+            return Err(xor_string!("32-bit payload is not supported!").into());
+        } else {
+            return Err(xor_string!("Couldn't find optional header in the payload PE!").into());
+        };
+
+    *CURRENT_STUB_PHASE.write()? = StubPhase::ImportResolving;
+
+    if let Err(err) = resolve_imports(payload_base_addr, import_table_rva, import_table_size) {
+        let mut temp = xor_string!("An error occured while resolving imports: ");
+        temp += err.as_str();
+
+        return Err(format!("{}", temp).into());
+    }
+
+    *CURRENT_STUB_PHASE.write()? = StubPhase::None;
 
     // ─── Run Payload ─────────────────────────────────────────────────────
     // unsafe {
