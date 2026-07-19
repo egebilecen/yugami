@@ -1,3 +1,4 @@
+use std::cmp::min;
 use std::path::Path;
 use std::process::ExitCode;
 use std::slice;
@@ -24,9 +25,9 @@ const BANNER: &str = r#"
  ____  __.      __    __           .__ 
 |    |/ _|____ |  | _|  | _______  |__|
 |      <_/ __ \|  |/ /  |/ /\__  \ |  |
-|    |  \  ___/|    <|    <  / __ \|  |
+|    |  \  ___/|    <|    <  / __ \|  |  結界 - A binary packer.
 |____|__ \___  >__|_ \__|_ \(____  /__|
-        \/   \/     \/    \/     \/       結界 - A binary packer.
+        \/   \/     \/    \/     \/    
 "#;
 
 fn run(args: CliArgs) -> Result<(), Box<dyn Error>> {
@@ -71,11 +72,19 @@ fn run(args: CliArgs) -> Result<(), Box<dyn Error>> {
 
     let raw_payload = fs::read(&args.path)
         .map_err(|err| format!("Couldn't read file `{}`: {}", args.path, err))?;
-    dprintln!("Raw payload size: {}", raw_payload.len());
+    dprintln!(
+        "Raw payload size: {} (0x{:02X})",
+        raw_payload.len(),
+        raw_payload.len()
+    );
 
     // ─── Extract PE Information From Payload ─────────────────────────────
     let pe = parse_portable_executable(&raw_payload)
         .map_err(|err| format!("Couldn't parse the PE headers of payload: {}", err))?;
+
+    if pe.coff.machine != 0x8664 {
+        return Err("Only x64 payloads are supported.".into());
+    }
 
     let (iat_rva, iat_size, entry_point_rva, image_size, header_size) =
         if let Some(opt_header) = pe.optional_header_64 {
@@ -87,15 +96,9 @@ fn run(args: CliArgs) -> Result<(), Box<dyn Error>> {
                 opt_header.size_of_image,
                 opt_header.size_of_headers,
             )
-        } else if let Some(opt_header) = pe.optional_header_32 {
-            let iat = opt_header.data_directories.import_address_table;
-            (
-                iat.virtual_address,
-                iat.size,
-                opt_header.address_of_entry_point,
-                opt_header.size_of_image,
-                opt_header.size_of_headers,
-            )
+        } else if let Some(_) = pe.optional_header_32 {
+            spinner.finish_and_clear();
+            return Err("32-bit payloads are not supported.".into());
         } else {
             spinner.finish_and_clear();
             return Err("Couldn't find IAT RVA.".into());
@@ -149,11 +152,16 @@ fn run(args: CliArgs) -> Result<(), Box<dyn Error>> {
             section.virtual_size
         );
 
+        let copy_len = min(
+            section.virtual_size as usize,
+            section.size_of_raw_data as usize,
+        );
+
         let start_rva = section.virtual_address as usize;
-        let end_rva = start_rva + section.virtual_size as usize;
+        let end_rva = start_rva + copy_len;
 
         let start_file_offset = section.pointer_to_raw_data as usize;
-        let end_file_offset = start_file_offset + section.virtual_size as usize;
+        let end_file_offset = start_file_offset + copy_len;
 
         mapped_payload[start_rva..end_rva]
             .copy_from_slice(&raw_payload[start_file_offset..end_file_offset]);
