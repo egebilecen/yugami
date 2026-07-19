@@ -57,6 +57,7 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
     let exception_location = exception_record.ExceptionAddress as usize;
     let exception_fault_addr = exception_record.ExceptionInformation[1];
 
+    dprintln!("Currently decrypted pages: {:?}", decrpyted_pages);
     dprintln!(
         "Exception code: 0x{:02X}",
         exception_record.ExceptionCode as usize
@@ -64,7 +65,6 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
     dprintln!("Exception location: 0x{:02X}", exception_location);
     dprintln!("Payload start address: 0x{:02X}", payload_start_addr);
     dprintln!("Payload end address: 0x{:02X}", payload_end_addr);
-    dprintln!("Currently decrypted pages: {:?}", decrpyted_pages);
 
     // ─── Handle Exception ────────────────────────────────────────────────
     match exception_record.ExceptionCode {
@@ -88,8 +88,44 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
             dprintln!("Page index: {}", page_index);
             dprintln!("Page addr: 0x{:02X}", page_addr);
 
+            let current_phase_protection = match stub_phase {
+                StubPhase::LoadingPayload | StubPhase::ImportResolving => Protection::READ_WRITE,
+                StubPhase::None => Protection::READ_EXECUTE,
+            };
+
             if decrpyted_pages.contains(&page_index) {
-                dprintln!("Faulting page is already decrypted. Skipping...");
+                dprintln!(
+                    "Faulting page is already decrypted. Querying memory region for its protection..."
+                );
+
+                if let Ok(result) = region::query(exception_fault_addr as *const u8) {
+                    if result.protection() != current_phase_protection {
+                        dprintln!(
+                            "Faulting page's protection is different than the expected protection for current phase. Updating..."
+                        );
+
+                        unsafe {
+                            let page_base_addr = exception_fault_addr & !(PAGE_SIZE - 1);
+
+                            if let Ok(_) = region::protect(
+                                page_base_addr as *const u8,
+                                PAGE_SIZE,
+                                current_phase_protection,
+                            ) {
+                                dprintln!(
+                                    "Successfully updated page protection to {}.",
+                                    current_phase_protection
+                                );
+                                return Ok(EXCEPTION_CONTINUE_EXECUTION);
+                            } else {
+                                dprintln!("Couldn't update page protection! Skipping...");
+                            }
+                        }
+                    }
+                } else {
+                    dprintln!("Couldn't query the memory region. Skipping...");
+                }
+
                 return Ok(EXCEPTION_CONTINUE_SEARCH);
             }
 
@@ -166,21 +202,17 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
             dprintln!("Decrypted page {}.", page_index);
 
             unsafe {
-                let protection = match stub_phase {
-                    StubPhase::LoadingPayload | StubPhase::ImportResolving => {
-                        Protection::READ_WRITE
-                    }
-                    StubPhase::None => Protection::READ_EXECUTE,
-                };
-
                 dprintln!(
                     "Updating protection level of page {} to {}.",
                     page_index,
-                    protection
+                    current_phase_protection
                 );
 
-                if let Err(_) = region::protect::<u8>(page_addr as *const _, PAGE_SIZE, protection)
-                {
+                if let Err(_) = region::protect::<u8>(
+                    page_addr as *const _,
+                    PAGE_SIZE,
+                    current_phase_protection,
+                ) {
                     dprintln!("Failed to update memory protection on faulting page!");
                     return Ok(EXCEPTION_CONTINUE_SEARCH);
                 }
