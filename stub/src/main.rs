@@ -153,7 +153,7 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     let (preferred_image_base, entry_point_rva, import_table_rva, import_table_size) =
         if let Some(opt_header) = payload_pe.optional_header_64 {
-            let iat = opt_header.data_directories.import_address_table;
+            let _iat = opt_header.data_directories.import_address_table;
             dprintln!(
                 "Entry point RVA: 0x{:02X} ({})",
                 opt_header.address_of_entry_point,
@@ -161,10 +161,10 @@ fn run() -> Result<(), Box<dyn Error>> {
             );
             dprintln!(
                 "IAT RVA: 0x{:02X} ({})",
-                iat.virtual_address,
-                iat.virtual_address
+                _iat.virtual_address,
+                _iat.virtual_address
             );
-            dprintln!("IAT size: {} (0x{:02X})", iat.size, iat.size);
+            dprintln!("IAT size: {} (0x{:02X})", _iat.size, _iat.size);
 
             (
                 opt_header.image_base,

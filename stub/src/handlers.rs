@@ -53,8 +53,8 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
         return Ok(EXCEPTION_CONTINUE_SEARCH);
     };
     let exception_record = unsafe { exception_info.read().ExceptionRecord.read() };
-    let exception_location = exception_record.ExceptionAddress as usize;
-    let exception_reason = exception_record.ExceptionInformation[0];
+    let _exception_location = exception_record.ExceptionAddress as usize;
+    let _exception_reason = exception_record.ExceptionInformation[0];
     let exception_fault_addr = exception_record.ExceptionInformation[1];
     let fault_page_addr = exception_fault_addr & !(PAGE_SIZE - 1);
 
@@ -65,10 +65,10 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
     );
     dprintln!(
         "Exception reason: 0x{:02X} ({})",
-        exception_reason,
-        exception_reason
+        _exception_reason,
+        _exception_reason
     );
-    dprintln!("Exception location: 0x{:02X}", exception_location);
+    dprintln!("Exception location: 0x{:02X}", _exception_location);
     dprintln!("Payload start address: 0x{:02X}", payload_start_addr);
     dprintln!("Payload end address: 0x{:02X}", payload_end_addr);
 
@@ -243,9 +243,9 @@ pub(crate) unsafe extern "system" fn page_fault_handler(
 ) -> i32 {
     match _page_fault_handler(exception_info) {
         Ok(val) => val,
-        Err(err) => {
+        Err(_err) => {
             dprintln!("!!! An error occurred during handling page fault !!!");
-            dprintln!("{}", err);
+            dprintln!("{}", _err);
 
             EXCEPTION_CONTINUE_SEARCH
         }

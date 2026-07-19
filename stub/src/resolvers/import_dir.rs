@@ -44,7 +44,7 @@ pub(crate) fn resolve_imports(
             continue;
         }
 
-        let entry_name =
+        let _entry_name =
             unsafe { CStr::from_ptr((image_base_addr + entry.Name as usize) as *const i8) };
         let ilt_rva = unsafe { entry.Anonymous.OriginalFirstThunk };
         let iat_rva = entry.FirstThunk;
@@ -65,7 +65,7 @@ pub(crate) fn resolve_imports(
         dprintln!("Name RVA: 0x{:02X} ({})", entry.Name, entry.Name);
         dprintln!(
             "Name: {}",
-            entry_name
+            _entry_name
                 .to_str()
                 .unwrap_or(xor_string!("<error>").as_str())
         );
