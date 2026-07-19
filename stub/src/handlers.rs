@@ -48,29 +48,33 @@ pub(crate) unsafe extern "system" fn page_fault_handler(
         return EXCEPTION_CONTINUE_SEARCH;
     };
     let exception_record = unsafe { exception_info.read().ExceptionRecord.read() };
-    let exception_addr = exception_record.ExceptionAddress as usize;
+    let exception_location = exception_record.ExceptionAddress as usize;
+    let exception_fault_addr = exception_record.ExceptionInformation[1];
 
-    dprintln!("Page fault handler invoked!");
+    dprintln!(">>> Exception handler invoked! <<<");
     dprintln!(
         "Exception code: 0x{:02X}",
         exception_record.ExceptionCode as usize
     );
-    dprintln!("Exception address: 0x{:02X}", exception_addr);
+    dprintln!("Exception location: 0x{:02X}", exception_location);
     dprintln!("Payload start address: 0x{:02X}", payload_start_addr);
     dprintln!("Payload end address: 0x{:02X}", payload_end_addr);
-
-    // ─── Check If Exception Occured In Payload Memory Region ─────────────
-    if exception_addr < payload_start_addr || exception_addr > payload_end_addr {
-        dprintln!("Exception didn't occur in payload memory region. Skipping...");
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
 
     // ─── Handle Exception ────────────────────────────────────────────────
     match exception_record.ExceptionCode {
         EXCEPTION_ACCESS_VIOLATION => {
-            let page_addr = exception_addr & !(PAGE_SIZE - 1);
+            dprintln!("Exception data address: 0x{:02X}", exception_fault_addr);
+
+            // ─── Check If Exception Occured In Payload Memory Region ─────────────
+            if exception_fault_addr < payload_start_addr || exception_fault_addr > payload_end_addr {
+                dprintln!("Page fault didn't occur in payload memory region. Skipping...");
+                return EXCEPTION_CONTINUE_SEARCH;
+            }
+
+            let page_addr = exception_fault_addr & !(PAGE_SIZE - 1);
             let page_index = (page_addr - payload_start_addr) / PAGE_SIZE;
             let mut page_key: U8_32 = [0u8; 32];
+
             dprintln!("Page index: {}", page_index);
             dprintln!("Page addr: 0x{:02X}", page_addr);
 
