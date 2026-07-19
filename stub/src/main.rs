@@ -172,7 +172,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 opt_header.data_directories.import_table.virtual_address,
                 opt_header.data_directories.import_table.size,
             )
-        } else if let Some(_) = payload_pe.optional_header_32 {
+        } else if payload_pe.optional_header_32.is_some() {
             return Err(xor_string!("32-bit payload is not supported!").into());
         } else {
             return Err(xor_string!("Couldn't find optional header in the payload PE!").into());
@@ -186,7 +186,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
 
     // ─── Resolve Relocations ─────────────────────────────────────────────
-    if let Some(reloc_section) = (&payload_pe.section_table).iter().find(|e| {
+    if let Some(reloc_section) = payload_pe.section_table.iter().find(|e| {
         e.get_name().unwrap_or("".to_string()).trim_matches('\0') == xor_string!(".reloc")
     }) {
         if let Err(err) = resolve_relocations(payload_base_addr, preferred_image_base as usize, reloc_section) {

@@ -86,7 +86,7 @@ fn run(args: CliArgs) -> Result<(), Box<dyn Error>> {
         return Err("Only x64 payloads are supported.".into());
     }
 
-    let (iat_rva, iat_size, entry_point_rva, image_size, header_size) =
+    let (_iat_rva, _iat_size, _entry_point_rva, image_size, header_size) =
         if let Some(opt_header) = pe.optional_header_64 {
             let iat = opt_header.data_directories.import_address_table;
             (
@@ -96,7 +96,7 @@ fn run(args: CliArgs) -> Result<(), Box<dyn Error>> {
                 opt_header.size_of_image,
                 opt_header.size_of_headers,
             )
-        } else if let Some(_) = pe.optional_header_32 {
+        } else if pe.optional_header_32.is_some() {
             spinner.finish_and_clear();
             return Err("32-bit payloads are not supported.".into());
         } else {
@@ -106,9 +106,9 @@ fn run(args: CliArgs) -> Result<(), Box<dyn Error>> {
 
     dprintln!("Image size: {}", image_size);
     dprintln!("Header size: {}", header_size);
-    dprintln!("Entry point RVA: 0x{:02X}", entry_point_rva);
-    dprintln!("IAT RVA: {}", iat_rva);
-    dprintln!("IAT size: {}", iat_size);
+    dprintln!("Entry point RVA: 0x{:02X}", _entry_point_rva);
+    dprintln!("IAT RVA: {}", _iat_rva);
+    dprintln!("IAT size: {}", _iat_size);
 
     thread::sleep(sleep_dur);
 
@@ -180,11 +180,11 @@ fn run(args: CliArgs) -> Result<(), Box<dyn Error>> {
         base_key.map(|b| format!("{:02X}", b)).join(" ")
     );
 
-    let prev_payload_size = mapped_payload.len();
+    let _prev_payload_size = mapped_payload.len();
     encrypt_payload(&mut mapped_payload, base_key);
     dprintln!(
         "Mapped payload is padded by {} bytes.",
-        mapped_payload.len() - prev_payload_size
+        mapped_payload.len() - _prev_payload_size
     );
 
     thread::sleep(sleep_dur);

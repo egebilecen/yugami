@@ -73,7 +73,7 @@ pub(crate) fn resolve_imports(
         let module_handle =
             unsafe { GetModuleHandleA((image_base_addr + entry.Name as usize) as *const _) };
         if module_handle.is_null() {
-            return Err(xor_string!("Couldn't get module handle!").into());
+            return Err(xor_string!("Couldn't get module handle!"));
         }
 
         dprintln!("Module handle: 0x{:02X}", module_handle as usize);
@@ -122,7 +122,7 @@ pub(crate) fn resolve_imports(
                         .unwrap_or("<error>")
                 }
             } else {
-                &ordinal_func_name.as_str()
+                ordinal_func_name.as_str()
             };
             let func_addr = if let Some(ptr) = func_ptr {
                 ptr as usize

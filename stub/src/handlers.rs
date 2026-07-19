@@ -18,7 +18,7 @@ pub(crate) static PAYLOAD_START_ADDR: OnceLock<usize> = OnceLock::new();
 pub(crate) static PAYLOAD_END_ADDR: OnceLock<usize> = OnceLock::new();
 pub(crate) static PROTECTION_OVERRIDE: RwLock<Option<Protection>> = RwLock::new(None);
 
-const MAX_DECRYPTED_PAGES: usize = 2;
+const MAX_DECRYPTED_PAGES: usize = 3;
 static DECRYPTED_PAGES: OnceLock<Mutex<Vec<usize>>> = OnceLock::new();
 
 // Temporary shadowing to disable debug logs.
@@ -112,8 +112,8 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
                         );
 
                         unsafe {
-                            if let Ok(_) =
-                                region::protect(fault_page_addr as *const u8, PAGE_SIZE, protection)
+                            if region::protect(fault_page_addr as *const u8, PAGE_SIZE, protection)
+                                .is_ok()
                             {
                                 dprintln!(
                                     "Successfully updated page protection to {}.",
@@ -146,11 +146,13 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
                 dprintln!("Derived key to re-encrypt page...");
 
                 unsafe {
-                    if let Err(_) = region::protect::<u8>(
+                    if region::protect::<u8>(
                         prev_page_addr as *const _,
                         PAGE_SIZE,
                         Protection::READ_WRITE,
-                    ) {
+                    )
+                    .is_err()
+                    {
                         dprintln!("Failed to update memory protection for previous page! (1)");
                     } else {
                         encrypt_page(
@@ -160,11 +162,13 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
                             &page_key,
                         );
 
-                        if let Err(_) = region::protect::<u8>(
+                        if region::protect::<u8>(
                             prev_page_addr as *mut _,
                             PAGE_SIZE,
                             Protection::NONE,
-                        ) {
+                        )
+                        .is_err()
+                        {
                             dprintln!("Failed to update memory protection for previous page! (2)");
                         }
                     }
@@ -182,11 +186,13 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
                     protection
                 );
 
-                if let Err(_) = region::protect::<u8>(
+                if region::protect::<u8>(
                     fault_page_addr as *const _,
                     PAGE_SIZE,
                     Protection::READ_WRITE,
-                ) {
+                )
+                .is_err()
+                {
                     dprintln!("Failed to update memory protection on faulting page!");
                     return Ok(EXCEPTION_CONTINUE_SEARCH);
                 }
@@ -215,8 +221,8 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
                     protection
                 );
 
-                if let Err(_) =
-                    region::protect::<u8>(fault_page_addr as *const _, PAGE_SIZE, protection)
+                if region::protect::<u8>(fault_page_addr as *const _, PAGE_SIZE, protection)
+                    .is_err()
                 {
                     dprintln!("Failed to update memory protection on faulting page!");
                     return Ok(EXCEPTION_CONTINUE_SEARCH);
