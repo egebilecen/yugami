@@ -151,7 +151,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             })?
     }
 
-    let (preferred_image_base, import_table_rva, import_table_size) =
+    let (preferred_image_base, entry_point_rva, import_table_rva, import_table_size) =
         if let Some(opt_header) = payload_pe.optional_header_64 {
             let iat = opt_header.data_directories.import_address_table;
             dprintln!(
@@ -168,6 +168,7 @@ fn run() -> Result<(), Box<dyn Error>> {
 
             (
                 opt_header.image_base,
+                opt_header.address_of_entry_point,
                 opt_header.data_directories.import_table.virtual_address,
                 opt_header.data_directories.import_table.size,
             )
@@ -201,12 +202,12 @@ fn run() -> Result<(), Box<dyn Error>> {
     // ─── Run Payload ─────────────────────────────────────────────────────
     *PROTECTION_OVERRIDE.write()? = None;
 
-    // unsafe {
-    //     let payload_entry_point = payload_base_addr + payload_info.entry_point_rva as usize;
-    //     let payload_code: extern "C" fn() -> i32 = std::mem::transmute(payload_entry_point);
+    unsafe {
+        let payload_entry_point = payload_base_addr + entry_point_rva as usize;
+        let payload_code: extern "C" fn() -> i32 = std::mem::transmute(payload_entry_point);
 
-    //     payload_code();
-    // }
+        payload_code();
+    }
 
     // ─── End ─────────────────────────────────────────────────────────────
     Ok(())
