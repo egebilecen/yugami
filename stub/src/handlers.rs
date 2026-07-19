@@ -226,11 +226,14 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
 pub(crate) unsafe extern "system" fn page_fault_handler(
     exception_info: *mut EXCEPTION_POINTERS,
 ) -> i32 {
-    if let Ok(val) = _page_fault_handler(exception_info) {
-        val
-    } else {
-        // TODO: Print error.
-        EXCEPTION_CONTINUE_SEARCH
+    match _page_fault_handler(exception_info) {
+        Ok(val) => val,
+        Err(err) => {
+            dprintln!("!!! An error occurred during handling page fault !!!");
+            dprintln!("{}", err);
+
+            EXCEPTION_CONTINUE_SEARCH
+        },
     }
 }
 
