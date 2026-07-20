@@ -11,6 +11,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use pe_parser::pe::parse_portable_executable;
 
 use debug::dprintln;
+use kekkai::crypto::PAGE_SIZE;
 use kekkai::random::get_random_bytes;
 use kekkai::{crypto::encrypt_payload, payload::PayloadInfo};
 
@@ -195,6 +196,10 @@ fn run(args: CliArgs) -> Result<(), Box<dyn Error>> {
     dprintln!(
         "Mapped payload is padded by {} bytes.",
         mapped_payload.len() - _prev_payload_size
+    );
+    dprintln!(
+        "Total number of pages: {}",
+        mapped_payload.len() / PAGE_SIZE
     );
 
     thread::sleep(sleep_dur);
