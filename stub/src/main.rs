@@ -129,9 +129,6 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    // ─── Parse Payload PE Headers ────────────────────────────────────────
-    *PROTECTION_OVERRIDE.write()? = Some(Protection::READ);
-
     let payload_pe = unsafe {
         parse_portable_executable(slice::from_raw_parts(
             payload_base_addr as *const u8,
@@ -143,43 +140,6 @@ fn run() -> Result<(), Box<dyn Error>> {
             temp
         })?
     };
-
-    *PROTECTION_OVERRIDE.write()? = None;
-
-    // ─── Save Section Protections ────────────────────────────────────────
-    for section in payload_pe.section_table.iter() {
-        let mut protection = Protection::NONE;
-
-        if section.characteristics & SectionFlags::IMAGE_SCN_MEM_READ.bits() != 0 {
-            protection |= Protection::READ;
-        }
-
-        if section.characteristics & SectionFlags::IMAGE_SCN_MEM_WRITE.bits() != 0 {
-            protection |= Protection::WRITE;
-        }
-
-        if section.characteristics & SectionFlags::IMAGE_SCN_MEM_EXECUTE.bits() != 0 {
-            protection |= Protection::EXECUTE;
-        }
-
-        let section_name = section_name_to_str(&section.name);
-        let section_addr = payload_base_addr + section.virtual_address as usize;
-        let section_page_index = section_addr.wrapping_sub(payload_base_addr) / PAGE_SIZE;
-
-        dprintln!("Section name: {}", section_name);
-        dprintln!("Section VA: 0x{:02X}", section_addr);
-        dprintln!("Section page index: {}", section_page_index);
-        dprintln!("Section protection: {}", protection);
-
-        PAGE_PROTECTIONS
-            .lock()?
-            .insert(section_page_index, protection);
-    }
-
-    // Override protection to READ/WRITE as next phases will be updating
-    // some memory regions of the payload. So if we get any page fault,
-    // it won't default to default protection, which is READ/EXECUTE.
-    *PROTECTION_OVERRIDE.write()? = Some(Protection::READ_WRITE);
 
     // ─── Resolve IAT ─────────────────────────────────────────────────────
     dprintln!("Resolving IAT...");
@@ -256,10 +216,6 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
 
     // ─── Handle TLS Callbacks ────────────────────────────────────────────
-    // TLS callbacks might need to initialize some data so give override
-    // protection to READ/WRITE/EXECUTE.
-    *PROTECTION_OVERRIDE.write()? = Some(Protection::READ_WRITE_EXECUTE);
-
     dprintln!("Handling TLS callbacks...");
     dprintln!("TLS table RVA: 0x{:02X}", tls_table_rva);
 
@@ -285,6 +241,36 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
 
     // TODO: Hook into thread creation.
+
+    // ─── Save Section Protections ────────────────────────────────────────
+    for section in payload_pe.section_table.iter() {
+        let mut protection = Protection::NONE;
+
+        if section.characteristics & SectionFlags::IMAGE_SCN_MEM_READ.bits() != 0 {
+            protection |= Protection::READ;
+        }
+
+        if section.characteristics & SectionFlags::IMAGE_SCN_MEM_WRITE.bits() != 0 {
+            protection |= Protection::WRITE;
+        }
+
+        if section.characteristics & SectionFlags::IMAGE_SCN_MEM_EXECUTE.bits() != 0 {
+            protection |= Protection::EXECUTE;
+        }
+
+        let section_name = section_name_to_str(&section.name);
+        let section_addr = payload_base_addr + section.virtual_address as usize;
+        let section_page_index = section_addr.wrapping_sub(payload_base_addr) / PAGE_SIZE;
+
+        dprintln!("Section name: {}", section_name);
+        dprintln!("Section VA: 0x{:02X}", section_addr);
+        dprintln!("Section page index: {}", section_page_index);
+        dprintln!("Section protection: {}", protection);
+
+        PAGE_PROTECTIONS
+            .lock()?
+            .insert(section_page_index, protection);
+    }
 
     // ─── Run Payload ─────────────────────────────────────────────────────
     *PROTECTION_OVERRIDE.write()? = None;
