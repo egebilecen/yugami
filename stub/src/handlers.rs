@@ -21,10 +21,12 @@ pub(crate) static PROTECTION_OVERRIDE: RwLock<Option<Protection>> = RwLock::new(
 const MAX_DECRYPTED_PAGES: usize = 3;
 static DECRYPTED_PAGES: OnceLock<Mutex<Vec<usize>>> = OnceLock::new();
 
-// Temporary shadowing to disable debug logs.
-// macro_rules! dprintln {
-//     ($($tt:tt)*) => {};
-// }
+// Shadow macro to append prefix.
+macro_rules! dprintln {
+    ($fmt:expr $(, $($arg:tt)*)?) => {
+        $crate::dprintln!(concat!("[PFH] ", $fmt) $(, $($arg)*)?);
+    };
+}
 
 #[inline]
 fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, String> {
@@ -64,9 +66,17 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
         exception_record.ExceptionCode as usize
     );
     dprintln!(
-        "Exception reason: 0x{:02X} ({})",
+        "Exception reason: {} (0x{:02X})",
+        if _exception_reason == 0 {
+            "READ"
+        } else if _exception_reason == 1 {
+            "WRITE"
+        } else if _exception_reason == 8 {
+            "EXECUTE"
+        } else {
+            "UNKNOWN"
+        },
         _exception_reason,
-        _exception_reason
     );
     dprintln!("Exception location: 0x{:02X}", _exception_location);
     dprintln!("Payload start address: 0x{:02X}", payload_start_addr);
@@ -97,6 +107,7 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
                 dprintln!("~~~ Protection override is set, which is {} ~~~", val);
                 val
             } else {
+                // TODO: This shouldn't default to RWE.
                 Protection::READ_WRITE_EXECUTE
             };
 
@@ -143,7 +154,7 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
 
                 let prev_page_addr = payload_start_addr + (prev_page_index * PAGE_SIZE);
                 derive_page_key(base_key, prev_page_index, &mut page_key);
-                dprintln!("Derived key to re-encrypt page...");
+                dprintln!("Derived key to re-encrypt page {}...", prev_page_index);
 
                 unsafe {
                     if region::protect::<u8>(

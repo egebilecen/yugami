@@ -88,6 +88,16 @@ fn run(args: CliArgs) -> Result<(), Box<dyn Error>> {
 
     let (_iat_rva, _iat_size, _entry_point_rva, image_size, header_size) =
         if let Some(opt_header) = pe.optional_header_64 {
+            dprintln!(
+                "TLS directory RVA: 0x{:02X}",
+                opt_header.data_directories.tls_table.virtual_address
+            );
+            dprintln!(
+                "TLS directory size: {} (0x{:02X})",
+                opt_header.data_directories.tls_table.size,
+                opt_header.data_directories.tls_table.size
+            );
+
             let iat = opt_header.data_directories.import_address_table;
             (
                 iat.virtual_address,
