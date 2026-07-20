@@ -11,9 +11,12 @@ use std::{env, ptr};
 use pe_parser::pe::parse_portable_executable;
 use region::Protection;
 use windows_sys::Win32::System::Diagnostics::Debug::AddVectoredExceptionHandler;
+use windows_sys::Win32::System::SystemServices::{
+    DLL_PROCESS_ATTACH, IMAGE_TLS_DIRECTORY64, PIMAGE_TLS_CALLBACK,
+};
 
 use crate::handlers::{
-    BASE_KEY, PROTECTION_OVERRIDE, PAYLOAD_END_ADDR, PAYLOAD_START_ADDR, page_fault_handler,
+    BASE_KEY, PAYLOAD_END_ADDR, PAYLOAD_START_ADDR, PROTECTION_OVERRIDE, page_fault_handler,
 };
 use crate::resolvers::import_dir::resolve_imports;
 use crate::resolvers::reloc::resolve_relocations;
@@ -112,6 +115,11 @@ fn run() -> Result<(), Box<dyn Error>> {
             })?
     }
 
+    // ─── Save Section Protections ────────────────────────────────────────
+    // TODO: Use section characteristics.
+    // Create a hash map in page fault handler. Save the permissions of
+    // each page using { <page index> => <permission> } mapping.
+
     // ─── Register VEH ────────────────────────────────────────────────────
     // VEH should be registered after payload is copied to memory. Because,
     // if a page fault occurs at the payload memory region before the payload
@@ -151,7 +159,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             })?
     }
 
-    let (preferred_image_base, entry_point_rva, import_table_rva, import_table_size) =
+    let (preferred_image_base, entry_point_rva, import_table_rva, import_table_size, tls_table_rva) =
         if let Some(opt_header) = payload_pe.optional_header_64 {
             let _iat = opt_header.data_directories.import_address_table;
             dprintln!(
@@ -161,16 +169,27 @@ fn run() -> Result<(), Box<dyn Error>> {
             );
             dprintln!(
                 "IAT RVA: 0x{:02X} ({})",
-                _iat.virtual_address,
-                _iat.virtual_address
+                opt_header
+                    .data_directories
+                    .import_address_table
+                    .virtual_address,
+                opt_header
+                    .data_directories
+                    .import_address_table
+                    .virtual_address
             );
-            dprintln!("IAT size: {} (0x{:02X})", _iat.size, _iat.size);
+            dprintln!(
+                "IAT size: {} (0x{:02X})",
+                opt_header.data_directories.import_address_table.size,
+                opt_header.data_directories.import_address_table.size
+            );
 
             (
                 opt_header.image_base,
                 opt_header.address_of_entry_point,
                 opt_header.data_directories.import_table.virtual_address,
                 opt_header.data_directories.import_table.size,
+                opt_header.data_directories.tls_table.virtual_address,
             )
         } else if payload_pe.optional_header_32.is_some() {
             return Err(xor_string!("32-bit payload is not supported!").into());
@@ -189,7 +208,11 @@ fn run() -> Result<(), Box<dyn Error>> {
     if let Some(reloc_section) = payload_pe.section_table.iter().find(|e| {
         e.get_name().unwrap_or("".to_string()).trim_matches('\0') == xor_string!(".reloc")
     }) {
-        if let Err(err) = resolve_relocations(payload_base_addr, preferred_image_base as usize, reloc_section) {
+        if let Err(err) = resolve_relocations(
+            payload_base_addr,
+            preferred_image_base as usize,
+            reloc_section,
+        ) {
             let mut temp = xor_string!("An error occurred while resolving relocations: ");
             temp += err.as_str();
 
@@ -198,6 +221,36 @@ fn run() -> Result<(), Box<dyn Error>> {
     } else {
         dprintln!("No relocation section found. Skipping resolving relocations...");
     }
+
+    // ─── Handle TLS Callbacks ────────────────────────────────────────────
+    *PROTECTION_OVERRIDE.write()? = Some(Protection::READ_WRITE_EXECUTE);
+
+    dprintln!("Handling TLS callbacks...");
+    dprintln!("TLS table RVA: 0x{:02X}", tls_table_rva);
+
+    let tls_dir = unsafe {
+        &*((payload_base_addr + tls_table_rva as usize) as *const IMAGE_TLS_DIRECTORY64)
+    };
+    let address_of_callbacks = tls_dir.AddressOfCallBacks;
+    dprintln!("TLS callbacks address: 0x{:02X}", address_of_callbacks);
+
+    if tls_dir.AddressOfCallBacks != 0 {
+        let mut callback_ptr = address_of_callbacks as *const PIMAGE_TLS_CALLBACK;
+        while let Some(callback) = unsafe { *callback_ptr } {
+            dprintln!("Executing TLS callback at 0x{:02X}.", callback_ptr as usize);
+            unsafe {
+                callback(
+                    payload_base_addr as *mut _,
+                    DLL_PROCESS_ATTACH,
+                    std::ptr::null_mut(),
+                );
+            }
+
+            callback_ptr = unsafe { callback_ptr.add(1) }
+        }
+    }
+
+    // TODO: Hook into thread creation.
 
     // ─── Run Payload ─────────────────────────────────────────────────────
     *PROTECTION_OVERRIDE.write()? = None;
