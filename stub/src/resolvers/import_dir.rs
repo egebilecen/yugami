@@ -1,6 +1,6 @@
 use std::ffi::CStr;
 
-use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress, LoadLibraryA};
 use windows_sys::Win32::System::SystemServices::IMAGE_IMPORT_DESCRIPTOR;
 use windows_sys::Win32::System::WindowsProgramming::IMAGE_THUNK_DATA64;
 
@@ -45,8 +45,9 @@ pub(crate) fn resolve_imports(
             continue;
         }
 
-        let _entry_name =
+        let entry_name_cstr =
             unsafe { CStr::from_ptr((image_base_addr + entry.Name as usize) as *const i8) };
+        let entry_name = entry_name_cstr.to_str().unwrap_or("<error>");
         let ilt_rva = unsafe { entry.Anonymous.OriginalFirstThunk };
         let iat_rva = entry.FirstThunk;
 
@@ -64,18 +65,23 @@ pub(crate) fn resolve_imports(
             entry.ForwarderChain
         );
         dprintln!("Name RVA: 0x{:02X} ({})", entry.Name, entry.Name);
-        dprintln!(
-            "Name: {}",
-            _entry_name
-                .to_str()
-                .unwrap_or(xor_string!("<error>").as_str())
-        );
+        dprintln!("Name: {}", entry_name);
 
-        let module_handle =
+        let mut module_handle =
             unsafe { GetModuleHandleA((image_base_addr + entry.Name as usize) as *const _) };
+
         if module_handle.is_null() {
-            // TODO: Search DLLs in current folder before giving up.
-            return Err(xor_string!("Couldn't get module handle!"));
+            dprintln!("Couldn't get module handle! Trying to load library...");
+            module_handle = unsafe { LoadLibraryA(entry_name_cstr.as_ptr() as *const _) };
+
+            if module_handle.is_null() {
+                dprintln!("Couldn't load library!");
+
+                let mut temp = xor_string!("Couldn't get module handle: ");
+                temp += entry_name;
+
+                return Err(temp);
+            }
         }
 
         dprintln!("Module handle: 0x{:02X}", module_handle as usize);
