@@ -131,7 +131,7 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
 
                     *page_protection
                 } else {
-                    let default_protection = Protection::READ_EXECUTE;
+                    let default_protection = Protection::READ_WRITE_EXECUTE;
                     dprintln!(
                         "~~~ No specific protection is set for page {}, defaulting to {} ~~~",
                         page_index,
