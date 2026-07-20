@@ -15,7 +15,7 @@ use windows_sys::Win32::{
 #[allow(unused_imports)]
 use debug::dprintln;
 use kekkai::crypto::{PAGE_SIZE, U8_32, decrypt_page, derive_page_key, encrypt_page};
-use proc_macros::xor_string;
+use proc_macros::xor_str;
 
 pub(crate) static BASE_KEY: OnceLock<U8_32> = OnceLock::new();
 pub(crate) static PAYLOAD_START_ADDR: OnceLock<usize> = OnceLock::new();
@@ -39,6 +39,7 @@ macro_rules! dprintln {
 //     ($($tt:tt)*) => {};
 // }
 
+// TODO: Do NOT use dynamic memory allocations in the fault handler.
 #[inline]
 fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, String> {
     let exception_record = unsafe { exception_info.read().ExceptionRecord.read() };
@@ -114,14 +115,14 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
 
     let protection = if let Some(val) = *(PROTECTION_OVERRIDE
         .read()
-        .map_err(|_| xor_string!("Couldn't get lock!"))?)
+        .map_err(|_| xor_str!("Couldn't get lock!"))?)
     {
         dprintln!("~~~ Protection override is set, which is {} ~~~", val);
         val
     } else {
         if let Some(page_protection) = PAGE_PROTECTIONS
             .lock()
-            .map_err(|_| xor_string!("Couldn't get lock! (2)"))?
+            .map_err(|_| xor_str!("Couldn't get lock! (2)"))?
             .get(&page_index)
         {
             dprintln!(
