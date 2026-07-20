@@ -1,6 +1,7 @@
 use pe_parser::section::SectionHeader;
 use windows_sys::Win32::System::SystemServices::IMAGE_BASE_RELOCATION;
 
+#[allow(unused_imports)]
 use debug::dprintln;
 
 pub(crate) fn resolve_relocations(image_base_addr: usize, preferred_image_base: usize, reloc_section: &SectionHeader) -> Result<(), String> {

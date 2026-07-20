@@ -9,6 +9,7 @@ use windows_sys::Win32::{
     },
 };
 
+#[allow(unused_imports)]
 use debug::dprintln;
 use kekkai::crypto::{PAGE_SIZE, U8_32, decrypt_page, derive_page_key, encrypt_page};
 use proc_macros::xor_string;
@@ -27,6 +28,11 @@ macro_rules! dprintln {
         $crate::dprintln!(concat!("[PFH] ", $fmt) $(, $($arg)*)?);
     };
 }
+
+// Temporary shadowing to disable debug logs.
+// macro_rules! dprintln {
+//     ($($tt:tt)*) => {};
+// }
 
 #[inline]
 fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, String> {

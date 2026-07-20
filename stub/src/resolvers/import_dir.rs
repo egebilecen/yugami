@@ -4,6 +4,7 @@ use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress
 use windows_sys::Win32::System::SystemServices::IMAGE_IMPORT_DESCRIPTOR;
 use windows_sys::Win32::System::WindowsProgramming::IMAGE_THUNK_DATA64;
 
+#[allow(unused_imports)]
 use debug::dprintln;
 use proc_macros::xor_string;
 
