@@ -41,6 +41,11 @@ macro_rules! dprintln {
 
 #[inline]
 fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, String> {
+    let exception_record = unsafe { exception_info.read().ExceptionRecord.read() };
+    if exception_record.ExceptionCode != EXCEPTION_ACCESS_VIOLATION {
+        return Ok(EXCEPTION_CONTINUE_SEARCH);
+    }
+
     dprintln!(">>> Exception handler invoked! <<<");
 
     // ─── Variables ───────────────────────────────────────────────────────
@@ -65,7 +70,6 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
         dprintln!("Payload start or end address is not set! Skipping page fault handler...");
         return Ok(EXCEPTION_CONTINUE_SEARCH);
     };
-    let exception_record = unsafe { exception_info.read().ExceptionRecord.read() };
     let _exception_location = exception_record.ExceptionAddress as usize;
     let _exception_reason = exception_record.ExceptionInformation[0];
     let exception_fault_addr = exception_record.ExceptionInformation[1];
@@ -94,190 +98,172 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
     dprintln!("Payload end address: 0x{:02X}", payload_end_addr);
 
     // ─── Handle Exception ────────────────────────────────────────────────
-    match exception_record.ExceptionCode {
-        EXCEPTION_ACCESS_VIOLATION => {
-            dprintln!("Exception fault address: 0x{:02X}", exception_fault_addr);
+    dprintln!("Exception fault address: 0x{:02X}", exception_fault_addr);
 
-            // ─── Check If Exception Occurred In Payload Memory Region ────────────
-            if exception_fault_addr < payload_start_addr || exception_fault_addr > payload_end_addr
-            {
-                dprintln!("Page fault didn't occur in payload memory region. Skipping...");
-                return Ok(EXCEPTION_CONTINUE_SEARCH);
-            }
+    // ─── Check If Exception Occurred In Payload Memory Region ────────────
+    if exception_fault_addr < payload_start_addr || exception_fault_addr > payload_end_addr {
+        dprintln!("Page fault didn't occur in payload memory region. Skipping...");
+        return Ok(EXCEPTION_CONTINUE_SEARCH);
+    }
 
-            let page_index = (fault_page_addr - payload_start_addr) / PAGE_SIZE;
-            let mut page_key: U8_32 = [0u8; 32];
+    let page_index = (fault_page_addr - payload_start_addr) / PAGE_SIZE;
+    let mut page_key: U8_32 = [0u8; 32];
 
-            dprintln!("Page index: {}", page_index);
-            dprintln!("Page addr: 0x{:02X}", fault_page_addr);
+    dprintln!("Page index: {}", page_index);
+    dprintln!("Page addr: 0x{:02X}", fault_page_addr);
 
-            let protection = if let Some(val) = *(PROTECTION_OVERRIDE
-                .read()
-                .map_err(|_| xor_string!("Couldn't get lock!"))?)
-            {
-                dprintln!("~~~ Protection override is set, which is {} ~~~", val);
-                val
-            } else {
-                if let Some(page_protection) = PAGE_PROTECTIONS
-                    .lock()
-                    .map_err(|_| xor_string!("Couldn't get lock! (2)"))?
-                    .get(&page_index)
-                {
-                    dprintln!(
-                        "~~~ Specific protection is set for page {}, which is {} ~~~",
-                        page_index,
-                        page_protection
-                    );
-
-                    *page_protection
-                } else {
-                    let default_protection = Protection::READ_WRITE_EXECUTE;
-                    dprintln!(
-                        "~~~ No specific protection is set for page {}, defaulting to {} ~~~",
-                        page_index,
-                        default_protection
-                    );
-
-                    default_protection
-                }
-            };
-
-            if decrpyted_pages.contains(&page_index) {
-                dprintln!(
-                    "Faulting page is already decrypted. Querying page for its protection..."
-                );
-
-                if let Ok(result) = region::query(fault_page_addr as *const u8) {
-                    if result.protection() != protection {
-                        dprintln!(
-                            "Faulting page has different protection than default/overridden protection. Updating..."
-                        );
-
-                        unsafe {
-                            if region::protect(fault_page_addr as *const u8, PAGE_SIZE, protection)
-                                .is_ok()
-                            {
-                                dprintln!(
-                                    "Successfully updated page protection to {}.",
-                                    protection
-                                );
-                                return Ok(EXCEPTION_CONTINUE_EXECUTION);
-                            } else {
-                                dprintln!("Couldn't update page protection! Skipping...");
-                            }
-                        }
-                    } else {
-                        dprintln!("Queried page has same protection. Skipping...");
-                    }
-                } else {
-                    dprintln!("Couldn't query the page. Skipping...");
-                }
-
-                return Ok(EXCEPTION_CONTINUE_SEARCH);
-            }
-
-            // ─── Encrypt Previous Pages ──────────────────────────
-            if decrpyted_pages.len() >= MAX_DECRYPTED_PAGES {
-                dprintln!("Max decrypted pages limit reached!");
-
-                let prev_page_index = decrpyted_pages[0];
-                dprintln!("Re-encrypting page {}...", prev_page_index);
-
-                let prev_page_addr = payload_start_addr + (prev_page_index * PAGE_SIZE);
-                derive_page_key(base_key, prev_page_index, &mut page_key);
-                dprintln!("Derived key to re-encrypt page {}...", prev_page_index);
-
-                unsafe {
-                    if region::protect::<u8>(
-                        prev_page_addr as *const _,
-                        PAGE_SIZE,
-                        Protection::READ_WRITE,
-                    )
-                    .is_err()
-                    {
-                        dprintln!("Failed to update memory protection for previous page! (1)");
-                    } else {
-                        encrypt_page(
-                            slice::from_raw_parts_mut::<u8>(prev_page_addr as *mut _, PAGE_SIZE)
-                                .try_into()
-                                .unwrap(),
-                            &page_key,
-                        );
-
-                        if region::protect::<u8>(
-                            prev_page_addr as *mut _,
-                            PAGE_SIZE,
-                            Protection::NONE,
-                        )
-                        .is_err()
-                        {
-                            dprintln!("Failed to update memory protection for previous page! (2)");
-                        }
-                    }
-                }
-
-                dprintln!("Re-encrypted page {}.", prev_page_index);
-                decrpyted_pages.remove(0);
-            }
-
-            // ─── Decrypt Current Page ────────────────────────────
-            unsafe {
-                dprintln!(
-                    "Updating protection level of page {} to {}.",
-                    page_index,
-                    protection
-                );
-
-                if region::protect::<u8>(
-                    fault_page_addr as *const _,
-                    PAGE_SIZE,
-                    Protection::READ_WRITE,
-                )
-                .is_err()
-                {
-                    dprintln!("Failed to update memory protection on faulting page!");
-                    return Ok(EXCEPTION_CONTINUE_SEARCH);
-                }
-            }
-
-            derive_page_key(base_key, page_index, &mut page_key);
+    let protection = if let Some(val) = *(PROTECTION_OVERRIDE
+        .read()
+        .map_err(|_| xor_string!("Couldn't get lock!"))?)
+    {
+        dprintln!("~~~ Protection override is set, which is {} ~~~", val);
+        val
+    } else {
+        if let Some(page_protection) = PAGE_PROTECTIONS
+            .lock()
+            .map_err(|_| xor_string!("Couldn't get lock! (2)"))?
+            .get(&page_index)
+        {
             dprintln!(
-                "Derived page key: {}",
-                page_key.map(|b| format!("{:02X}", b)).join(" ")
+                "~~~ Specific protection is set for page {}, which is {} ~~~",
+                page_index,
+                page_protection
             );
 
-            unsafe {
-                decrypt_page(
-                    slice::from_raw_parts_mut::<u8>(fault_page_addr as *mut _, PAGE_SIZE)
+            *page_protection
+        } else {
+            let default_protection = Protection::READ_WRITE_EXECUTE;
+            dprintln!(
+                "~~~ No specific protection is set for page {}, defaulting to {} ~~~",
+                page_index,
+                default_protection
+            );
+
+            default_protection
+        }
+    };
+
+    if decrpyted_pages.contains(&page_index) {
+        dprintln!("Faulting page is already decrypted. Querying page for its protection...");
+
+        if let Ok(result) = region::query(fault_page_addr as *const u8) {
+            if result.protection() != protection {
+                dprintln!(
+                    "Faulting page has different protection than default/overridden protection. Updating..."
+                );
+
+                unsafe {
+                    if region::protect(fault_page_addr as *const u8, PAGE_SIZE, protection).is_ok()
+                    {
+                        dprintln!("Successfully updated page protection to {}.", protection);
+                        return Ok(EXCEPTION_CONTINUE_EXECUTION);
+                    } else {
+                        dprintln!("Couldn't update page protection! Skipping...");
+                    }
+                }
+            } else {
+                dprintln!("Queried page has same protection. Skipping...");
+            }
+        } else {
+            dprintln!("Couldn't query the page. Skipping...");
+        }
+
+        return Ok(EXCEPTION_CONTINUE_SEARCH);
+    }
+
+    // ─── Encrypt Previous Pages ──────────────────────────
+    if decrpyted_pages.len() >= MAX_DECRYPTED_PAGES {
+        dprintln!("Max decrypted pages limit reached!");
+
+        let prev_page_index = decrpyted_pages[0];
+        dprintln!("Re-encrypting page {}...", prev_page_index);
+
+        let prev_page_addr = payload_start_addr + (prev_page_index * PAGE_SIZE);
+        derive_page_key(base_key, prev_page_index, &mut page_key);
+        dprintln!("Derived key to re-encrypt page {}...", prev_page_index);
+
+        unsafe {
+            if region::protect::<u8>(
+                prev_page_addr as *const _,
+                PAGE_SIZE,
+                Protection::READ_WRITE,
+            )
+            .is_err()
+            {
+                dprintln!("Failed to update memory protection for previous page! (1)");
+            } else {
+                encrypt_page(
+                    slice::from_raw_parts_mut::<u8>(prev_page_addr as *mut _, PAGE_SIZE)
                         .try_into()
                         .unwrap(),
                     &page_key,
                 );
-            }
-            dprintln!("Decrypted page {}.", page_index);
 
-            unsafe {
-                dprintln!(
-                    "Updating protection level of page {} to {}.",
-                    page_index,
-                    protection
-                );
-
-                if region::protect::<u8>(fault_page_addr as *const _, PAGE_SIZE, protection)
+                if region::protect::<u8>(prev_page_addr as *mut _, PAGE_SIZE, Protection::NONE)
                     .is_err()
                 {
-                    dprintln!("Failed to update memory protection on faulting page!");
-                    return Ok(EXCEPTION_CONTINUE_SEARCH);
+                    dprintln!("Failed to update memory protection for previous page! (2)");
                 }
             }
-
-            decrpyted_pages.push(page_index);
-
-            dprintln!("Continuing execution...");
-            Ok(EXCEPTION_CONTINUE_EXECUTION)
         }
-        _ => Ok(EXCEPTION_CONTINUE_SEARCH),
+
+        dprintln!("Re-encrypted page {}.", prev_page_index);
+        decrpyted_pages.remove(0);
     }
+
+    // ─── Decrypt Current Page ────────────────────────────
+    unsafe {
+        dprintln!(
+            "Updating protection level of page {} to {}.",
+            page_index,
+            protection
+        );
+
+        if region::protect::<u8>(
+            fault_page_addr as *const _,
+            PAGE_SIZE,
+            Protection::READ_WRITE,
+        )
+        .is_err()
+        {
+            dprintln!("Failed to update memory protection on faulting page!");
+            return Ok(EXCEPTION_CONTINUE_SEARCH);
+        }
+    }
+
+    derive_page_key(base_key, page_index, &mut page_key);
+    dprintln!(
+        "Derived page key: {}",
+        page_key.map(|b| format!("{:02X}", b)).join(" ")
+    );
+
+    unsafe {
+        decrypt_page(
+            slice::from_raw_parts_mut::<u8>(fault_page_addr as *mut _, PAGE_SIZE)
+                .try_into()
+                .unwrap(),
+            &page_key,
+        );
+    }
+    dprintln!("Decrypted page {}.", page_index);
+
+    unsafe {
+        dprintln!(
+            "Updating protection level of page {} to {}.",
+            page_index,
+            protection
+        );
+
+        if region::protect::<u8>(fault_page_addr as *const _, PAGE_SIZE, protection).is_err() {
+            dprintln!("Failed to update memory protection on faulting page!");
+            return Ok(EXCEPTION_CONTINUE_SEARCH);
+        }
+    }
+
+    decrpyted_pages.push(page_index);
+
+    dprintln!("Continuing execution...");
+    Ok(EXCEPTION_CONTINUE_EXECUTION)
 }
 
 pub(crate) unsafe extern "system" fn page_fault_handler(
