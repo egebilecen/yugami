@@ -15,7 +15,7 @@ use kekkai::random::get_random_bytes;
 use kekkai::{crypto::encrypt_payload, payload::PayloadInfo};
 
 #[derive(FromArgs, Debug)]
-#[argh(description = "Kekkai (結界) - A binary packer.")]
+#[argh(description = "=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=")]
 struct CliArgs {
     #[argh(option, description = "path to the payload")]
     path: String,

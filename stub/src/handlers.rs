@@ -1,5 +1,8 @@
 use core::slice;
-use std::sync::{Mutex, OnceLock, RwLock};
+use std::{
+    collections::HashMap,
+    sync::{LazyLock, Mutex, OnceLock, RwLock},
+};
 
 use region::Protection;
 use windows_sys::Win32::{
@@ -17,6 +20,8 @@ use proc_macros::xor_string;
 pub(crate) static BASE_KEY: OnceLock<U8_32> = OnceLock::new();
 pub(crate) static PAYLOAD_START_ADDR: OnceLock<usize> = OnceLock::new();
 pub(crate) static PAYLOAD_END_ADDR: OnceLock<usize> = OnceLock::new();
+pub(crate) static PAGE_PROTECTIONS: LazyLock<Mutex<HashMap<usize, Protection>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 pub(crate) static PROTECTION_OVERRIDE: RwLock<Option<Protection>> = RwLock::new(None);
 
 const MAX_DECRYPTED_PAGES: usize = 3;
@@ -113,8 +118,28 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
                 dprintln!("~~~ Protection override is set, which is {} ~~~", val);
                 val
             } else {
-                // TODO: This shouldn't default to RWE.
-                Protection::READ_WRITE_EXECUTE
+                if let Some(page_protection) = PAGE_PROTECTIONS
+                    .lock()
+                    .map_err(|_| xor_string!("Couldn't get lock! (2)"))?
+                    .get(&page_index)
+                {
+                    dprintln!(
+                        "~~~ Specific protection is set for page {}, which is {} ~~~",
+                        page_index,
+                        page_protection
+                    );
+
+                    *page_protection
+                } else {
+                    let default_protection = Protection::READ_EXECUTE;
+                    dprintln!(
+                        "~~~ No specific protection is set for page {}, defaulting to {} ~~~",
+                        page_index,
+                        default_protection
+                    );
+
+                    default_protection
+                }
             };
 
             if decrpyted_pages.contains(&page_index) {

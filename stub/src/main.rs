@@ -9,6 +9,7 @@ use std::process::ExitCode;
 use std::{env, ptr};
 
 use pe_parser::pe::parse_portable_executable;
+use pe_parser::section::SectionFlags;
 use region::Protection;
 use windows_sys::Win32::System::Diagnostics::Debug::AddVectoredExceptionHandler;
 use windows_sys::Win32::System::SystemServices::{
@@ -16,11 +17,13 @@ use windows_sys::Win32::System::SystemServices::{
 };
 
 use crate::handlers::{
-    BASE_KEY, PAYLOAD_END_ADDR, PAYLOAD_START_ADDR, PROTECTION_OVERRIDE, page_fault_handler,
+    BASE_KEY, PAGE_PROTECTIONS, PAYLOAD_END_ADDR, PAYLOAD_START_ADDR, PROTECTION_OVERRIDE,
+    page_fault_handler,
 };
 use crate::resolvers::import_dir::resolve_imports;
 use crate::resolvers::reloc::resolve_relocations;
 use debug::dprintln;
+use kekkai::crypto::PAGE_SIZE;
 use kekkai::payload::PayloadInfo;
 use proc_macros::xor_string;
 
@@ -75,9 +78,9 @@ fn run() -> Result<(), Box<dyn Error>> {
     })?;
     let payload_base_addr = payload_alloc.as_ptr::<u8>() as usize;
 
-    // We could have set the protection as READ/WRITE to the `region::alloc`
+    // We could have set the protection as READ/WRITE in the `region::alloc()`
     // call above, however, debuggers are keeping record of initial protection
-    // of the allocated pages so we are setting it to READ/WRITE here.
+    // of the allocated pages so we are setting it to READ/WRITE here instead.
     unsafe {
         region::protect::<u8>(
             payload_base_addr as *mut _,
@@ -115,11 +118,6 @@ fn run() -> Result<(), Box<dyn Error>> {
             })?
     }
 
-    // ─── Save Section Protections ────────────────────────────────────────
-    // TODO: Use section characteristics.
-    // Create a hash map in page fault handler. Save the permissions of
-    // each page using { <page index> => <permission> } mapping.
-
     // ─── Register VEH ────────────────────────────────────────────────────
     // VEH should be registered after payload is copied to memory. Because,
     // if a page fault occurs at the payload memory region before the payload
@@ -131,13 +129,8 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    // Override protection to READ/WRITE as next phases will be updating
-    // some memory regions of the payload. So if we get any page fault,
-    // it won't default to READ/EXECUTE protection.
-    *PROTECTION_OVERRIDE.write()? = Some(Protection::READ_WRITE);
-
-    // ─── Resolve IAT ─────────────────────────────────────────────────────
-    dprintln!("Resolving IAT...");
+    // ─── Parse Payload PE Headers ────────────────────────────────────────
+    *PROTECTION_OVERRIDE.write()? = Some(Protection::READ);
 
     let payload_pe = unsafe {
         parse_portable_executable(slice::from_raw_parts(
@@ -150,6 +143,46 @@ fn run() -> Result<(), Box<dyn Error>> {
             temp
         })?
     };
+
+    *PROTECTION_OVERRIDE.write()? = None;
+
+    // ─── Save Section Protections ────────────────────────────────────────
+    for section in payload_pe.section_table.iter() {
+        let mut protection = Protection::NONE;
+
+        if section.characteristics & SectionFlags::IMAGE_SCN_MEM_READ.bits() != 0 {
+            protection |= Protection::READ;
+        }
+
+        if section.characteristics & SectionFlags::IMAGE_SCN_MEM_WRITE.bits() != 0 {
+            protection |= Protection::WRITE;
+        }
+
+        if section.characteristics & SectionFlags::IMAGE_SCN_MEM_EXECUTE.bits() != 0 {
+            protection |= Protection::EXECUTE;
+        }
+
+        let section_name = section_name_to_str(&section.name);
+        let section_addr = payload_base_addr + section.virtual_address as usize;
+        let section_page_index = section_addr.wrapping_sub(payload_base_addr) / PAGE_SIZE;
+
+        dprintln!("Section name: {}", section_name);
+        dprintln!("Section VA: 0x{:02X}", section_addr);
+        dprintln!("Section page index: {}", section_page_index);
+        dprintln!("Section protection: {}", protection);
+
+        PAGE_PROTECTIONS
+            .lock()?
+            .insert(section_page_index, protection);
+    }
+
+    // Override protection to READ/WRITE as next phases will be updating
+    // some memory regions of the payload. So if we get any page fault,
+    // it won't default to default protection, which is READ/EXECUTE.
+    *PROTECTION_OVERRIDE.write()? = Some(Protection::READ_WRITE);
+
+    // ─── Resolve IAT ─────────────────────────────────────────────────────
+    dprintln!("Resolving IAT...");
 
     unsafe {
         region::protect::<u8>(payload_base_addr as *mut _, payload.len(), Protection::NONE)
@@ -223,14 +256,15 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
 
     // ─── Handle TLS Callbacks ────────────────────────────────────────────
+    // TLS callbacks might need to initialize some data so give override
+    // protection to READ/WRITE/EXECUTE.
     *PROTECTION_OVERRIDE.write()? = Some(Protection::READ_WRITE_EXECUTE);
 
     dprintln!("Handling TLS callbacks...");
     dprintln!("TLS table RVA: 0x{:02X}", tls_table_rva);
 
-    let tls_dir = unsafe {
-        &*((payload_base_addr + tls_table_rva as usize) as *const IMAGE_TLS_DIRECTORY64)
-    };
+    let tls_dir =
+        unsafe { &*((payload_base_addr + tls_table_rva as usize) as *const IMAGE_TLS_DIRECTORY64) };
     let address_of_callbacks = tls_dir.AddressOfCallBacks;
     dprintln!("TLS callbacks address: 0x{:02X}", address_of_callbacks);
 
@@ -264,6 +298,14 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     // ─── End ─────────────────────────────────────────────────────────────
     Ok(())
+}
+
+fn section_name_to_str(buf: &[u8; 8]) -> &str {
+    std::str::from_utf8(match buf.iter().position(|b| *b == 0x00) {
+        Some(i) => &buf[..i],
+        None => buf,
+    })
+    .unwrap_or("<error>")
 }
 
 /* -------------------------------------------------------------------------- */

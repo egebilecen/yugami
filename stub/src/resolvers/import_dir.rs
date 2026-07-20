@@ -74,6 +74,7 @@ pub(crate) fn resolve_imports(
         let module_handle =
             unsafe { GetModuleHandleA((image_base_addr + entry.Name as usize) as *const _) };
         if module_handle.is_null() {
+            // TODO: Search DLLs in current folder before giving up.
             return Err(xor_string!("Couldn't get module handle!"));
         }
 
