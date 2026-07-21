@@ -16,7 +16,6 @@ use super::lru::LruPageList;
 #[allow(unused_imports)]
 use debug::dprintln;
 use kekkai::crypto::{PAGE_SIZE, U8_32, decrypt_page, derive_page_key, encrypt_page};
-use proc_macros::xor_str;
 
 pub(crate) static BASE_KEY: OnceLock<U8_32> = OnceLock::new();
 pub(crate) static PAYLOAD_START_ADDR: OnceLock<usize> = OnceLock::new();
@@ -114,36 +113,7 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
     dprintln!("Page index: {}", page_index);
     dprintln!("Page addr: 0x{:02X}", fault_page_addr);
 
-    let protection = if let Some(val) = *(PROTECTION_OVERRIDE
-        .read()
-        .map_err(|_| xor_str!("Couldn't get lock!"))?)
-    {
-        dprintln!("~~~ Protection override is set, which is {} ~~~", val);
-        val
-    } else {
-        if let Some(page_protection) = PAGE_PROTECTIONS
-            .lock()
-            .map_err(|_| xor_str!("Couldn't get lock! (2)"))?
-            .get(&page_index)
-        {
-            dprintln!(
-                "~~~ Specific protection is set for page {}, which is {} ~~~",
-                page_index,
-                page_protection
-            );
-
-            *page_protection
-        } else {
-            let default_protection = Protection::READ_WRITE_EXECUTE;
-            dprintln!(
-                "~~~ No specific protection is set for page {}, defaulting to {} ~~~",
-                page_index,
-                default_protection
-            );
-
-            default_protection
-        }
-    };
+    let protection = Protection::READ_WRITE_EXECUTE;
 
     // ─── Handle JIT Page Encryption / Decryption ─────────────────────────
     // Page is not decrypted yet.
