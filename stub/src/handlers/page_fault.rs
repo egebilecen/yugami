@@ -212,13 +212,17 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
                     dprintln!("Couldn't update page protection! Skipping...");
                 }
             } else {
-                dprintln!("Queried page has same protection. Skipping...");
+                dprintln!(
+                    "Queried page has same protection. Re-applying protection to flush TLB..."
+                );
+                let _ =
+                    unsafe { region::protect(fault_page_addr as *const u8, PAGE_SIZE, protection) };
+                return Ok(EXCEPTION_CONTINUE_EXECUTION);
             }
         } else {
             dprintln!("Couldn't query the page. Skipping...");
+            return Ok(EXCEPTION_CONTINUE_SEARCH);
         }
-
-        return Ok(EXCEPTION_CONTINUE_SEARCH);
     }
 
     // ─── Decrypt Current Page ────────────────────────────

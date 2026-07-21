@@ -15,10 +15,15 @@ use windows_sys::Win32::System::Diagnostics::Debug::AddVectoredExceptionHandler;
 use windows_sys::Win32::System::SystemServices::{
     DLL_PROCESS_ATTACH, IMAGE_TLS_DIRECTORY64, PIMAGE_TLS_CALLBACK,
 };
+use windows_sys::Win32::System::Threading::{TLS_OUT_OF_INDEXES, TlsAlloc};
 
 use crate::handlers::page_fault::{
     BASE_KEY, PAGE_PROTECTIONS, PAYLOAD_END_ADDR, PAYLOAD_START_ADDR, PROTECTION_OVERRIDE,
     page_fault_handler,
+};
+use crate::handlers::tls::{
+    PAYLOAD_ALLOCATED_TLS_INDEX, PAYLOAD_TLS_CALLBACKS_ADDR, PAYLOAD_TLS_DIR_ADDR,
+    setup_current_thread_tls,
 };
 use crate::resolvers::import_dir::resolve_imports;
 use crate::resolvers::reloc::resolve_relocations;
@@ -26,6 +31,8 @@ use debug::dprintln;
 use kekkai::crypto::PAGE_SIZE;
 use kekkai::payload::PayloadInfo;
 use proc_macros::xor_string;
+
+// TODO: Remove `region` library. Use raw Windows `VirtualAlloc`, etc. instead.
 
 fn run() -> Result<(), Box<dyn Error>> {
     // ─── Read Current Executable Headers ─────────────────────────────────
@@ -214,28 +221,60 @@ fn run() -> Result<(), Box<dyn Error>> {
     dprintln!("Handling TLS callbacks...");
     dprintln!("TLS table RVA: 0x{:02X}", tls_table_rva);
 
-    let tls_dir =
-        unsafe { &*((payload_base_addr + tls_table_rva as usize) as *const IMAGE_TLS_DIRECTORY64) };
+    let tls_dir_addr = payload_base_addr + tls_table_rva as usize;
+    let tls_dir = unsafe { &*(tls_dir_addr as *const IMAGE_TLS_DIRECTORY64) };
     let address_of_callbacks = tls_dir.AddressOfCallBacks;
+    let address_of_index = tls_dir.AddressOfIndex;
+
     dprintln!("TLS callbacks address: 0x{:02X}", address_of_callbacks);
+    dprintln!("TLS address of index: 0x{:02X}", address_of_index);
+
+    PAYLOAD_TLS_DIR_ADDR
+        .set(tls_dir_addr)
+        .map_err(|_| xor_string!("Couldn't set payload TLS directory address!"))?;
+
+    // Allocate TLS index.
+    let address_of_index_ptr = address_of_index as *mut u32;
+    if !address_of_index_ptr.is_null() {
+        let allocated_index = unsafe { TlsAlloc() };
+
+        if allocated_index != TLS_OUT_OF_INDEXES {
+            PAYLOAD_ALLOCATED_TLS_INDEX
+                .set(allocated_index)
+                .map_err(|_| xor_string!("Couldn't set payload allocated TLS index!"))?;
+
+            unsafe {
+                *address_of_index_ptr = allocated_index;
+                setup_current_thread_tls(tls_dir, allocated_index)
+                    .map_err(|_| xor_string!("Couldn't setup current thread TLS!"))?;
+            }
+        } else {
+            return Err(xor_string!("Couldn't allocate TLS index!").into());
+        }
+    }
 
     if tls_dir.AddressOfCallBacks != 0 {
+        PAYLOAD_TLS_CALLBACKS_ADDR
+            .set(tls_dir.AddressOfCallBacks as usize)
+            .map_err(|_| xor_string!("Couldn't set payload TLS callbacks address!"))?;
+
         let mut callback_ptr = address_of_callbacks as *const PIMAGE_TLS_CALLBACK;
-        while let Some(callback) = unsafe { *callback_ptr } {
-            dprintln!("Executing TLS callback at 0x{:02X}.", callback_ptr as usize);
-            unsafe {
+        unsafe {
+            while let Some(callback) = *callback_ptr {
+                dprintln!(
+                    "Executing TLS callback function at 0x{:02X}.",
+                    callback as usize
+                );
+
                 callback(
                     payload_base_addr as *mut _,
                     DLL_PROCESS_ATTACH,
                     std::ptr::null_mut(),
                 );
+                callback_ptr = callback_ptr.add(1);
             }
-
-            callback_ptr = unsafe { callback_ptr.add(1) }
         }
     }
-
-    // TODO: Hook into thread creation.
 
     // ─── Save Section Protections ────────────────────────────────────────
     for section in payload_pe.section_table.iter() {
