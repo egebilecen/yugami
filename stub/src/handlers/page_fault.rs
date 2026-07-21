@@ -12,7 +12,7 @@ use windows_sys::Win32::{
     },
 };
 
-use crate::lru::LruPageList;
+use super::lru::LruPageList;
 #[allow(unused_imports)]
 use debug::dprintln;
 use kekkai::crypto::{PAGE_SIZE, U8_32, decrypt_page, derive_page_key, encrypt_page};
@@ -158,7 +158,10 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
 
             let evicted_page_addr = payload_start_addr + (evicted_page_index * PAGE_SIZE);
             derive_page_key(base_key, evicted_page_index, &mut page_key);
-            dprintln!("Derived key to re-encrypt evicted page {}...", evicted_page_index);
+            dprintln!(
+                "Derived key to re-encrypt evicted page {}...",
+                evicted_page_index
+            );
 
             if unsafe {
                 region::protect::<u8>(

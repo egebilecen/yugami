@@ -96,7 +96,7 @@ impl<const N: usize> Display for LruPageList<N> {
 #[cfg(test)]
 mod tests {
     use super::LruPageList;
-    use crate::lru::INVALID_PAGE;
+    use crate::handlers::lru::INVALID_PAGE;
 
     #[test]
     fn add() {

@@ -1,6 +1,5 @@
 mod handlers;
 mod resolvers;
-mod lru;
 
 use core::slice;
 use std::cmp::max;
@@ -17,7 +16,7 @@ use windows_sys::Win32::System::SystemServices::{
     DLL_PROCESS_ATTACH, IMAGE_TLS_DIRECTORY64, PIMAGE_TLS_CALLBACK,
 };
 
-use crate::handlers::{
+use crate::handlers::page_fault::{
     BASE_KEY, PAGE_PROTECTIONS, PAYLOAD_END_ADDR, PAYLOAD_START_ADDR, PROTECTION_OVERRIDE,
     page_fault_handler,
 };
