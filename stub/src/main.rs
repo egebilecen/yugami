@@ -1,5 +1,6 @@
 mod handlers;
 mod resolvers;
+mod lru;
 
 use core::slice;
 use std::cmp::max;

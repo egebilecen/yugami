@@ -12,6 +12,7 @@ use windows_sys::Win32::{
     },
 };
 
+use crate::lru::LruPageList;
 #[allow(unused_imports)]
 use debug::dprintln;
 use kekkai::crypto::{PAGE_SIZE, U8_32, decrypt_page, derive_page_key, encrypt_page};
@@ -24,8 +25,8 @@ pub(crate) static PAGE_PROTECTIONS: LazyLock<Mutex<HashMap<usize, Protection>>> 
     LazyLock::new(|| Mutex::new(HashMap::new()));
 pub(crate) static PROTECTION_OVERRIDE: RwLock<Option<Protection>> = RwLock::new(None);
 
-const MAX_DECRYPTED_PAGES: usize = 3;
-static DECRYPTED_PAGES: OnceLock<Mutex<Vec<usize>>> = OnceLock::new();
+const MAX_DECRYPTED_PAGES: usize = 20;
+static DECRYPTED_PAGES: OnceLock<Mutex<LruPageList<MAX_DECRYPTED_PAGES>>> = OnceLock::new();
 
 // Shadow macro to append prefix.
 macro_rules! dprintln {
@@ -51,7 +52,7 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
 
     // ─── Variables ───────────────────────────────────────────────────────
     let mut decrpyted_pages = match DECRYPTED_PAGES
-        .get_or_init(|| Mutex::new(Vec::with_capacity(MAX_DECRYPTED_PAGES)))
+        .get_or_init(|| Mutex::new(LruPageList::new()))
         .lock()
     {
         Ok(data) => data,
@@ -76,7 +77,7 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
     let exception_fault_addr = exception_record.ExceptionInformation[1];
     let fault_page_addr = exception_fault_addr & !(PAGE_SIZE - 1);
 
-    dprintln!("Currently decrypted pages: {:?}", decrpyted_pages);
+    dprintln!("Currently decrypted pages: {}", decrpyted_pages);
     dprintln!(
         "Exception code: 0x{:02X}",
         exception_record.ExceptionCode as usize
@@ -144,7 +145,53 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
         }
     };
 
-    if decrpyted_pages.contains(&page_index) {
+    // ─── Handle JIT Page Encryption / Decryption ─────────────────────────
+    // Page is not decrypted yet.
+    if decrpyted_pages.get(page_index).is_none() {
+        // ─── Re-encrypt Evicted Page ─────────────────────────────────
+        if let Some(evicted_page_index) = decrpyted_pages.add(page_index) {
+            dprintln!(
+                "A LRU page is evicted! Evicted page index: {}",
+                evicted_page_index
+            );
+            dprintln!("Re-encrypting evicted page {}...", evicted_page_index);
+
+            let evicted_page_addr = payload_start_addr + (evicted_page_index * PAGE_SIZE);
+            derive_page_key(base_key, evicted_page_index, &mut page_key);
+            dprintln!("Derived key to re-encrypt evicted page {}...", evicted_page_index);
+
+            if unsafe {
+                region::protect::<u8>(
+                    evicted_page_addr as *const _,
+                    PAGE_SIZE,
+                    Protection::READ_WRITE,
+                )
+            }
+            .is_err()
+            {
+                dprintln!("Failed to update memory protection for evicted page! (1)");
+            } else {
+                encrypt_page(
+                    unsafe {
+                        slice::from_raw_parts_mut::<u8>(evicted_page_addr as *mut _, PAGE_SIZE)
+                            .try_into()
+                            .unwrap()
+                    },
+                    &page_key,
+                );
+
+                if unsafe {
+                    region::protect::<u8>(evicted_page_addr as *mut _, PAGE_SIZE, Protection::NONE)
+                }
+                .is_err()
+                {
+                    dprintln!("Failed to update memory protection for evicted page! (2)");
+                }
+            }
+
+            dprintln!("Re-encrypted evicted page {}.", evicted_page_index);
+        }
+    } else {
         dprintln!("Faulting page is already decrypted. Querying page for its protection...");
 
         if let Ok(result) = region::query(fault_page_addr as *const u8) {
@@ -169,50 +216,6 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
         }
 
         return Ok(EXCEPTION_CONTINUE_SEARCH);
-    }
-
-    // ─── Encrypt Previous Pages ──────────────────────────
-    if decrpyted_pages.len() >= MAX_DECRYPTED_PAGES {
-        dprintln!("Max decrypted pages limit reached!");
-
-        let prev_page_index = decrpyted_pages[0];
-        dprintln!("Re-encrypting page {}...", prev_page_index);
-
-        let prev_page_addr = payload_start_addr + (prev_page_index * PAGE_SIZE);
-        derive_page_key(base_key, prev_page_index, &mut page_key);
-        dprintln!("Derived key to re-encrypt page {}...", prev_page_index);
-
-        if unsafe {
-            region::protect::<u8>(
-                prev_page_addr as *const _,
-                PAGE_SIZE,
-                Protection::READ_WRITE,
-            )
-        }
-        .is_err()
-        {
-            dprintln!("Failed to update memory protection for previous page! (1)");
-        } else {
-            encrypt_page(
-                unsafe {
-                    slice::from_raw_parts_mut::<u8>(prev_page_addr as *mut _, PAGE_SIZE)
-                        .try_into()
-                        .unwrap()
-                },
-                &page_key,
-            );
-
-            if unsafe {
-                region::protect::<u8>(prev_page_addr as *mut _, PAGE_SIZE, Protection::NONE)
-            }
-            .is_err()
-            {
-                dprintln!("Failed to update memory protection for previous page! (2)");
-            }
-        }
-
-        dprintln!("Re-encrypted page {}.", prev_page_index);
-        decrpyted_pages.remove(0);
     }
 
     // ─── Decrypt Current Page ────────────────────────────
@@ -262,8 +265,6 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
         dprintln!("Failed to update memory protection on faulting page!");
         return Ok(EXCEPTION_CONTINUE_SEARCH);
     }
-
-    decrpyted_pages.push(page_index);
 
     dprintln!("Continuing execution...");
     Ok(EXCEPTION_CONTINUE_EXECUTION)
