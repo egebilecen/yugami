@@ -32,10 +32,8 @@ pub(crate) fn resolve_imports(
 
         // PE spec: "The last entry is set to zero (NULL) to indicate the end of the table."
         // Check if we are at the last entry.
-        unsafe {
-            if entry.Anonymous.OriginalFirstThunk == 0 && entry.Name == 0 {
-                break;
-            }
+        if unsafe { entry.Anonymous.OriginalFirstThunk } == 0 && entry.Name == 0 {
+            break;
         }
 
         // Invalid name pointer.
