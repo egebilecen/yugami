@@ -1,9 +1,12 @@
 use std::{error::Error, ffi::CStr};
 
 use pe_parser::{pe::parse_portable_executable, section::SectionFlags};
-use region::Protection;
 use windows_sys::Win32::System::{
     LibraryLoader::{GetModuleHandleA, GetProcAddress, LoadLibraryA},
+    Memory::{
+        PAGE_EXECUTE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_NOACCESS,
+        PAGE_PROTECTION_FLAGS, PAGE_READONLY, PAGE_READWRITE,
+    },
     SystemServices::{IMAGE_BASE_RELOCATION, IMAGE_IMPORT_DESCRIPTOR},
     WindowsProgramming::IMAGE_THUNK_DATA64,
 };
@@ -53,18 +56,20 @@ pub fn map_pe(pe_bytes: &[u8]) -> Result<EntryFn, Box<dyn Error>> {
 
     // ─── Save Section Protections ────────────────────────────────────────
     for section in pe.section_table.iter() {
-        let mut protection = Protection::NONE;
+        let mut r = false;
+        let mut w = false;
+        let mut x = false;
 
         if section.characteristics & SectionFlags::IMAGE_SCN_MEM_READ.bits() != 0 {
-            protection |= Protection::READ;
+            r = true;
         }
 
         if section.characteristics & SectionFlags::IMAGE_SCN_MEM_WRITE.bits() != 0 {
-            protection |= Protection::WRITE;
+            w = true;
         }
 
         if section.characteristics & SectionFlags::IMAGE_SCN_MEM_EXECUTE.bits() != 0 {
-            protection |= Protection::EXECUTE;
+            x = true;
         }
 
         let _section_name = section_name_to_str(&section.name);
@@ -74,11 +79,16 @@ pub fn map_pe(pe_bytes: &[u8]) -> Result<EntryFn, Box<dyn Error>> {
         dprintln!("Section name: {}", _section_name);
         dprintln!("Section VA: 0x{:02X}", section_addr);
         dprintln!("Section page index: {}", section_page_index);
-        dprintln!("Section protection: {}", protection);
+        dprintln!(
+            "Section protection: r: {}, w: {}, x: {}",
+            r as u8,
+            w as u8,
+            x as u8
+        );
 
         PAGE_PROTECTIONS
             .lock()?
-            .insert(section_page_index, protection);
+            .insert(section_page_index, to_prot_flags(r, w, x));
     }
 
     // ─── Resolve IAT ─────────────────────────────────────────────────────
@@ -288,6 +298,19 @@ pub(crate) fn resolve_relocations(
     }
 
     Ok(())
+}
+
+fn to_prot_flags(r: bool, w: bool, x: bool) -> PAGE_PROTECTION_FLAGS {
+    match (r, w, x) {
+        (true, true, true) => PAGE_EXECUTE_READWRITE,
+        (true, false, true) => PAGE_EXECUTE_READ,
+        (false, false, true) => PAGE_EXECUTE,
+        (true, true, false) => PAGE_READWRITE,
+        (true, false, false) => PAGE_READONLY,
+        (false, false, false) => PAGE_NOACCESS,
+        (false, true, true) => PAGE_EXECUTE_READWRITE,
+        (false, true, false) => PAGE_READWRITE,
+    }
 }
 
 fn section_name_to_str(buf: &[u8; 8]) -> &str {

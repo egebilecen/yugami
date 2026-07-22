@@ -11,8 +11,11 @@ use std::process::ExitCode;
 use std::{env, ptr};
 
 use pe_parser::pe::parse_portable_executable;
-use region::Protection;
 use windows_sys::Win32::System::Diagnostics::Debug::AddVectoredExceptionHandler;
+use windows_sys::Win32::System::Memory::{
+    MEM_COMMIT, MEM_RESERVE, PAGE_NOACCESS, PAGE_PROTECTION_FLAGS, PAGE_READWRITE, VirtualAlloc,
+    VirtualProtect,
+};
 
 use crate::handlers::page_fault::{
     BASE_KEY, PAYLOAD_END_ADDR, PAYLOAD_START_ADDR, page_fault_handler,
@@ -21,8 +24,6 @@ use crate::mapper::map_pe;
 use debug::dprintln;
 use kekkai::payload::PayloadInfo;
 use proc_macros::xor_string;
-
-// TODO: Remove `region` library. Use raw Windows `VirtualAlloc`, etc. instead.
 
 fn run() -> Result<(), Box<dyn Error>> {
     // ─── Read Current Executable Headers ─────────────────────────────────
@@ -70,11 +71,19 @@ fn run() -> Result<(), Box<dyn Error>> {
     let payload = &overlay[size_of::<PayloadInfo>()..];
     dprintln!("Payload size: {} (0x{:02X})", payload.len(), payload.len());
 
-    let payload_alloc = region::alloc(payload.len(), Protection::NONE).map_err(|_| {
-        xor_string!("Couldn't allocate memory region to store payload!").to_string()
-    })?;
-    let payload_base_addr = payload_alloc.as_ptr::<u8>() as usize;
+    let payload_alloc = unsafe {
+        VirtualAlloc(
+            ptr::null(),
+            payload.len(),
+            MEM_RESERVE | MEM_COMMIT,
+            PAGE_NOACCESS,
+        )
+    };
+    if payload_alloc.is_null() {
+        return Err(xor_string!("Couldn't allocate memory region to store payload!").into());
+    }
 
+    let payload_base_addr = payload_alloc as usize;
     PAYLOAD_START_ADDR
         .set(payload_base_addr)
         .map_err(|_| xor_string!("Couldn't set payload start address!").to_string())?;
@@ -90,15 +99,19 @@ fn run() -> Result<(), Box<dyn Error>> {
     // We could have set the protection as READ/WRITE in the `region::alloc()`
     // call above, however, debuggers are keeping record of initial protection
     // of the allocated pages so we are setting it to READ/WRITE here instead.
-    unsafe {
-        region::protect::<u8>(
-            payload_base_addr as *mut _,
+    let mut old_protect: PAGE_PROTECTION_FLAGS = 0x00;
+    if unsafe {
+        VirtualProtect(
+            payload_alloc,
             payload.len(),
-            Protection::READ_WRITE,
+            PAGE_READWRITE,
+            &mut old_protect,
         )
-        .map_err(|_| {
-            xor_string!("Couldn't update protection level of allocated payload region!").to_string()
-        })?
+    } == 0
+    {
+        return Err(
+            xor_string!("Couldn't update protection level of allocated payload region!").into(),
+        );
     }
 
     // ─── Copy Payload To Memory ──────────────────────────────────────────
@@ -111,15 +124,18 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
 
     // Set protection back to NONE so page can be decrypted on page fault.
-    unsafe {
-        region::protect::<u8>(
-            payload_base_addr as *mut _,
+    if unsafe {
+        VirtualProtect(
+            payload_alloc,
             payload.len(),
-            Protection::NONE,
+            PAGE_NOACCESS,
+            &mut old_protect,
         )
-        .map_err(|_| {
-            xor_string!("Couldn't update protection level of allocated payload region!").to_string()
-        })?
+    } == 0
+    {
+        return Err(
+            xor_string!("Couldn't update protection level of allocated payload region!").into(),
+        );
     }
 
     // ─── Register VEH ────────────────────────────────────────────────────

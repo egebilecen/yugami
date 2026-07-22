@@ -1,13 +1,19 @@
 use core::slice;
 use std::{
     collections::HashMap,
+    mem,
     sync::{LazyLock, Mutex, OnceLock},
 };
 
-use region::Protection;
-use windows_sys::Win32::System::Diagnostics::Debug::{
-            EXCEPTION_CONTINUE_EXECUTION, EXCEPTION_CONTINUE_SEARCH, EXCEPTION_POINTERS,
-        };
+use windows_sys::Win32::System::{
+    Diagnostics::Debug::{
+        EXCEPTION_CONTINUE_EXECUTION, EXCEPTION_CONTINUE_SEARCH, EXCEPTION_POINTERS,
+    },
+    Memory::{
+        MEMORY_BASIC_INFORMATION, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_NOACCESS,
+        PAGE_PROTECTION_FLAGS, PAGE_READONLY, PAGE_READWRITE, VirtualProtect, VirtualQuery,
+    },
+};
 
 use super::lru::LruPageList;
 use crate::handlers::lock::WinLock;
@@ -19,7 +25,7 @@ use proc_macros::xor_str;
 pub(crate) static BASE_KEY: OnceLock<U8_32> = OnceLock::new();
 pub(crate) static PAYLOAD_START_ADDR: OnceLock<usize> = OnceLock::new();
 pub(crate) static PAYLOAD_END_ADDR: OnceLock<usize> = OnceLock::new();
-pub(crate) static PAGE_PROTECTIONS: LazyLock<Mutex<HashMap<usize, Protection>>> =
+pub(crate) static PAGE_PROTECTIONS: LazyLock<Mutex<HashMap<usize, PAGE_PROTECTION_FLAGS>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 const MAX_DECRYPTED_PAGES: usize = 256;
@@ -110,7 +116,8 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
     dprintln!("Page addr: 0x{:02X}", fault_page_addr);
 
     // ─── Handle JIT Page Encryption / Decryption ─────────────────────────
-    let default_protection = Protection::READ_WRITE_EXECUTE;
+    let default_protection = PAGE_EXECUTE_READWRITE;
+    let mut old_protect: PAGE_PROTECTION_FLAGS = 0x00;
 
     // Page is not decrypted yet.
     if decrpyted_pages.get(page_index).is_none() {
@@ -130,13 +137,13 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
             );
 
             if unsafe {
-                region::protect::<u8>(
+                VirtualProtect(
                     evicted_page_addr as *const _,
                     PAGE_SIZE,
-                    Protection::READ_WRITE,
+                    PAGE_READWRITE,
+                    &mut old_protect,
                 )
-            }
-            .is_err()
+            } == 0
             {
                 dprintln!("Failed to update memory protection for evicted page! (1)");
             } else {
@@ -150,9 +157,13 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
                 );
 
                 if unsafe {
-                    region::protect::<u8>(evicted_page_addr as *mut _, PAGE_SIZE, Protection::NONE)
-                }
-                .is_err()
+                    VirtualProtect(
+                        evicted_page_addr as *const _,
+                        PAGE_SIZE,
+                        PAGE_NOACCESS,
+                        &mut old_protect,
+                    )
+                } == 0
                 {
                     dprintln!("Failed to update memory protection for evicted page! (2)");
                 }
@@ -163,16 +174,33 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
     } else {
         dprintln!("Faulting page is already decrypted. Querying page for its protection...");
 
-        if let Ok(result) = region::query(fault_page_addr as *const u8) {
-            if result.protection() != default_protection {
+        let mut mem_info: MEMORY_BASIC_INFORMATION = unsafe { mem::zeroed() };
+
+        if unsafe {
+            VirtualQuery(
+                fault_page_addr as *const _,
+                &mut mem_info,
+                size_of::<MEMORY_BASIC_INFORMATION>(),
+            )
+        } > 0
+        {
+            if mem_info.Protect != default_protection {
                 dprintln!(
                     "Faulting page has different protection than default/overridden protection. Updating..."
                 );
 
-                if unsafe { region::protect(fault_page_addr as *const u8, PAGE_SIZE, default_protection) }
-                    .is_ok()
-                {
-                    dprintln!("Successfully updated page protection to {}.", default_protection);
+                if unsafe {
+                    VirtualProtect(
+                        fault_page_addr as *const _,
+                        PAGE_SIZE,
+                        default_protection,
+                        &mut old_protect,
+                    ) != 0
+                } {
+                    dprintln!(
+                        "Successfully updated page protection to {}.",
+                        prot_to_str(default_protection)
+                    );
                     return Ok(EXCEPTION_CONTINUE_EXECUTION);
                 } else {
                     dprintln!("Couldn't update page protection! Skipping...");
@@ -188,20 +216,16 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
     }
 
     // ─── Decrypt Current Page ────────────────────────────
-    dprintln!(
-        "Updating protection level of page {} to {}.",
-        page_index,
-        Protection::READ_WRITE
-    );
+    dprintln!("Updating protection level of page {} to rw-.", page_index);
 
     if unsafe {
-        region::protect::<u8>(
+        VirtualProtect(
             fault_page_addr as *const _,
             PAGE_SIZE,
-            Protection::READ_WRITE,
+            PAGE_READWRITE,
+            &mut old_protect,
         )
-    }
-    .is_err()
+    } == 0
     {
         dprintln!("Failed to update memory protection on faulting page!");
         return Ok(EXCEPTION_CONTINUE_SEARCH);
@@ -226,10 +250,17 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
     dprintln!(
         "Updating protection level of page {} to {}.",
         page_index,
-        default_protection
+        prot_to_str(default_protection)
     );
 
-    if unsafe { region::protect::<u8>(fault_page_addr as *const _, PAGE_SIZE, default_protection) }.is_err()
+    if unsafe {
+        VirtualProtect(
+            fault_page_addr as *const _,
+            PAGE_SIZE,
+            default_protection,
+            &mut old_protect,
+        )
+    } == 0
     {
         dprintln!("Failed to update memory protection on faulting page!");
         return Ok(EXCEPTION_CONTINUE_SEARCH);
@@ -250,6 +281,19 @@ pub(crate) unsafe extern "system" fn page_fault_handler(
 
             EXCEPTION_CONTINUE_SEARCH
         }
+    }
+}
+
+fn prot_to_str(protect: PAGE_PROTECTION_FLAGS) -> &'static str {
+    let base_protect = protect & 0xFF;
+
+    match base_protect {
+        PAGE_NOACCESS => "---",
+        PAGE_READONLY => "r--",
+        PAGE_READWRITE => "rw-",
+        PAGE_EXECUTE_READ => "r-x",
+        PAGE_EXECUTE_READWRITE => "rwx",
+        _ => "unknown",
     }
 }
 
