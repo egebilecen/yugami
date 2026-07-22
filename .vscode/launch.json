@@ -3,7 +3,7 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug",
+            "name": "Debug (Packer)",
             "cargo": {
                 "args": [
                     "run",
@@ -43,7 +43,7 @@
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "Build Packer"
         },
-                {
+        {
             "type": "lldb",
             "request": "launch",
             "name": "Run (Release)",

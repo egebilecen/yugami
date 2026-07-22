@@ -1,3 +1,3 @@
 mod lru;
+mod lock;
 pub mod page_fault;
-pub mod tls;
