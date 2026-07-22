@@ -123,7 +123,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         );
     }
 
-    // Set protection back to NONE so page can be decrypted on page fault.
+    // Set protection back to NONE so pages can be decrypted on page fault.
     if unsafe {
         VirtualProtect(
             payload_alloc,

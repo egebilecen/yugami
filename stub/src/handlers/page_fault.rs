@@ -31,7 +31,7 @@ pub(crate) static PAYLOAD_END_ADDR: OnceLock<usize> = OnceLock::new();
 pub(crate) static PAGE_PROTECTIONS: LazyLock<Mutex<HashMap<usize, PAGE_PROTECTION_FLAGS>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-const MAX_DECRYPTED_PAGES: usize = 64;
+const MAX_DECRYPTED_PAGES: usize = 256;
 static DECRYPTED_PAGES: OnceLock<Mutex<LruPageList<MAX_DECRYPTED_PAGES>>> = OnceLock::new();
 static FAULT_HANDLER_LOCK: WinLock = WinLock::new();
 
@@ -99,13 +99,14 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<(), ()
     // ─── Handle JIT Page Encryption / Decryption ─────────────────────────
     if exception_reason == 8 {
         let exec_page_addr = get_page_addr(exception_addr);
-        let data_page_addr = get_page_addr(exception_data_addr);
-
         ensure_page_ready(exec_page_addr)?;
 
-        if exec_page_addr != data_page_addr {
+        let page_offset = exception_addr & (PAGE_SIZE - 1);
+        const MAX_INSTRUCTION_SIZE: usize = 15;
+
+        if page_offset > PAGE_SIZE - MAX_INSTRUCTION_SIZE {
             dprintln!("Instruction spans page boundary! Preparing adjacent page...");
-            ensure_page_ready(data_page_addr)?;
+            let _ = ensure_page_ready(exec_page_addr + PAGE_SIZE);
         }
     } else if exception_reason == 0 || exception_reason == 1 {
         let data_page_addr = get_page_addr(exception_data_addr);
@@ -118,7 +119,7 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<(), ()
         if page_offset > PAGE_SIZE - MAX_ACCESS_SIZE {
             dprintln!("Data access spans page boundary! Preparing next page...");
             let next_page_addr = data_page_addr + PAGE_SIZE;
-            ensure_page_ready(next_page_addr)?;
+            let _ = ensure_page_ready(next_page_addr);
         }
     } else {
         dprintln!("Unknown exception reason detected!");
@@ -150,7 +151,7 @@ fn ensure_page_ready(page_addr: usize) -> Result<(), ()> {
         return Err(());
     };
 
-    if page_addr < payload_start_addr || page_addr > payload_end_addr {
+    if page_addr < payload_start_addr || page_addr >= payload_end_addr {
         dprintln!("Given page address is outside payload memory region.");
         return Err(());
     }
