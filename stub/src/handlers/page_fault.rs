@@ -5,13 +5,16 @@ use std::{
     sync::{LazyLock, Mutex, OnceLock},
 };
 
-use windows_sys::Win32::System::{
-    Diagnostics::Debug::{
-        EXCEPTION_CONTINUE_EXECUTION, EXCEPTION_CONTINUE_SEARCH, EXCEPTION_POINTERS,
-    },
-    Memory::{
-        MEMORY_BASIC_INFORMATION, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_NOACCESS,
-        PAGE_PROTECTION_FLAGS, PAGE_READONLY, PAGE_READWRITE, VirtualProtect, VirtualQuery,
+use windows_sys::Win32::{
+    Foundation::EXCEPTION_ACCESS_VIOLATION,
+    System::{
+        Diagnostics::Debug::{
+            EXCEPTION_CONTINUE_EXECUTION, EXCEPTION_CONTINUE_SEARCH, EXCEPTION_POINTERS,
+        },
+        Memory::{
+            MEMORY_BASIC_INFORMATION, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_NOACCESS,
+            PAGE_PROTECTION_FLAGS, PAGE_READONLY, PAGE_READWRITE, VirtualProtect, VirtualQuery,
+        },
     },
 };
 
@@ -28,7 +31,7 @@ pub(crate) static PAYLOAD_END_ADDR: OnceLock<usize> = OnceLock::new();
 pub(crate) static PAGE_PROTECTIONS: LazyLock<Mutex<HashMap<usize, PAGE_PROTECTION_FLAGS>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-const MAX_DECRYPTED_PAGES: usize = 256;
+const MAX_DECRYPTED_PAGES: usize = 64;
 static DECRYPTED_PAGES: OnceLock<Mutex<LruPageList<MAX_DECRYPTED_PAGES>>> = OnceLock::new();
 static FAULT_HANDLER_LOCK: WinLock = WinLock::new();
 
@@ -46,23 +49,16 @@ macro_rules! dprintln {
 
 // TODO: Do NOT use dynamic memory allocations in the fault handler.
 #[inline]
-fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, String> {
+fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<(), ()> {
     let _guard = FAULT_HANDLER_LOCK.lock();
     dprintln!(">>> Exception handler invoked! <<<");
 
     // ─── Variables ───────────────────────────────────────────────────────
     let exception_record = unsafe { exception_info.read().ExceptionRecord.read() };
-    let mut decrpyted_pages = DECRYPTED_PAGES
-        .get_or_init(|| Mutex::new(LruPageList::new()))
-        .lock()
-        .map_err(|_| xor_str!("Decrypted pages lock is poisoned!"))?;
-
-    let base_key = if let Some(key) = BASE_KEY.get() {
-        key
-    } else {
-        dprintln!("Base key is not set! Skipping page fault handler...");
-        return Ok(EXCEPTION_CONTINUE_SEARCH);
-    };
+    let exception_code = exception_record.ExceptionCode as u32;
+    let exception_addr = exception_record.ExceptionAddress as usize;
+    let exception_reason = exception_record.ExceptionInformation[0];
+    let exception_data_addr = exception_record.ExceptionInformation[1];
 
     let (payload_start_addr, payload_end_addr) = if let Some(start_addr) = PAYLOAD_START_ADDR.get()
         && let Some(end_addr) = PAYLOAD_END_ADDR.get()
@@ -70,153 +66,212 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
         (start_addr.to_owned(), end_addr.to_owned())
     } else {
         dprintln!("Payload start or end address is not set! Skipping page fault handler...");
-        return Ok(EXCEPTION_CONTINUE_SEARCH);
+        return Err(());
     };
 
-    let _exception_location = exception_record.ExceptionAddress as usize;
-    let _exception_reason = exception_record.ExceptionInformation[0];
-    let exception_fault_addr = exception_record.ExceptionInformation[1];
-    let fault_page_addr = exception_fault_addr & !(PAGE_SIZE - 1);
-
     // dprintln!("Currently decrypted pages: {}", decrpyted_pages);
-    dprintln!(
-        "Exception code: 0x{:02X}",
-        exception_record.ExceptionCode as usize
-    );
+    dprintln!("Exception code: 0x{:02X}", exception_code);
     dprintln!(
         "Exception reason: {} (0x{:02X})",
-        if _exception_reason == 0 {
+        if exception_reason == 0 {
             "READ"
-        } else if _exception_reason == 1 {
+        } else if exception_reason == 1 {
             "WRITE"
-        } else if _exception_reason == 8 {
+        } else if exception_reason == 8 {
             "EXECUTE"
         } else {
             "UNKNOWN"
         },
-        _exception_reason,
+        exception_reason,
     );
-    dprintln!("Exception location: 0x{:02X}", _exception_location);
+    dprintln!("Exception location address: 0x{:02X}", exception_addr);
+    dprintln!(
+        "Exception inacessible data address: 0x{:02X}",
+        exception_data_addr
+    );
     dprintln!("Payload start address: 0x{:02X}", payload_start_addr);
     dprintln!("Payload end address: 0x{:02X}", payload_end_addr);
 
-    // ─── Handle Exception ────────────────────────────────────────────────
-    dprintln!("Exception fault address: 0x{:02X}", exception_fault_addr);
-
-    // ─── Check If Exception Occurred In Payload Memory Region ────────────
-    if exception_fault_addr < payload_start_addr || exception_fault_addr > payload_end_addr {
-        dprintln!("Page fault didn't occur in payload memory region. Skipping...");
-        return Ok(EXCEPTION_CONTINUE_SEARCH);
+    if exception_code != EXCEPTION_ACCESS_VIOLATION as u32 {
+        return Err(());
     }
 
-    let page_index = (fault_page_addr - payload_start_addr) / PAGE_SIZE;
-    let mut page_key: U8_32 = [0u8; 32];
-
-    dprintln!("Page index: {}", page_index);
-    dprintln!("Page addr: 0x{:02X}", fault_page_addr);
-
     // ─── Handle JIT Page Encryption / Decryption ─────────────────────────
+    if exception_reason == 8 {
+        let exec_page_addr = get_page_addr(exception_addr);
+        let data_page_addr = get_page_addr(exception_data_addr);
+
+        ensure_page_ready(exec_page_addr)?;
+
+        if exec_page_addr != data_page_addr {
+            dprintln!("Instruction spans page boundary! Preparing adjacent page...");
+            ensure_page_ready(data_page_addr)?;
+        }
+    } else if exception_reason == 0 || exception_reason == 1 {
+        let data_page_addr = get_page_addr(exception_data_addr);
+
+        ensure_page_ready(data_page_addr)?;
+
+        let page_offset = exception_data_addr & (PAGE_SIZE - 1);
+        const MAX_ACCESS_SIZE: usize = 64;
+
+        if page_offset > PAGE_SIZE - MAX_ACCESS_SIZE {
+            dprintln!("Data access spans page boundary! Preparing next page...");
+            let next_page_addr = data_page_addr + PAGE_SIZE;
+            ensure_page_ready(next_page_addr)?;
+        }
+    } else {
+        dprintln!("Unknown exception reason detected!");
+    }
+
+    dprintln!("Continuing execution...");
+    Ok(())
+}
+
+fn ensure_page_ready(page_addr: usize) -> Result<(), ()> {
+    let mut decrypted_pages = DECRYPTED_PAGES
+        .get_or_init(|| Mutex::new(LruPageList::new()))
+        .lock()
+        .expect(xor_str!("Decrypted pages lock is poisoned!"));
+
+    let base_key = if let Some(key) = BASE_KEY.get() {
+        key
+    } else {
+        dprintln!("Base key is not set! Skipping page fault handler...");
+        return Err(());
+    };
+
+    let (payload_start_addr, payload_end_addr) = if let Some(start_addr) = PAYLOAD_START_ADDR.get()
+        && let Some(end_addr) = PAYLOAD_END_ADDR.get()
+    {
+        (start_addr.to_owned(), end_addr.to_owned())
+    } else {
+        dprintln!("Payload start address is not set! Skipping page fault handler...");
+        return Err(());
+    };
+
+    if page_addr < payload_start_addr || page_addr > payload_end_addr {
+        dprintln!("Given page address is outside payload memory region.");
+        return Err(());
+    }
+
     let default_protection = PAGE_EXECUTE_READWRITE;
-    let mut old_protect: PAGE_PROTECTION_FLAGS = 0x00;
+    let page_index = get_page_index(payload_start_addr, page_addr);
 
     // Page is not decrypted yet.
-    if decrpyted_pages.get(page_index).is_none() {
-        // ─── Re-encrypt Evicted Page ─────────────────────────────────
-        if let Some(evicted_page_index) = decrpyted_pages.add(page_index) {
-            dprintln!(
-                "A LRU page is evicted! Evicted page index: {}",
-                evicted_page_index
-            );
-            dprintln!("Re-encrypting evicted page {}...", evicted_page_index);
+    if decrypted_pages.get(page_index).is_none() {
+        return do_page_decryption(
+            payload_start_addr,
+            page_index,
+            base_key,
+            default_protection,
+            &mut decrypted_pages,
+        );
+    }
 
-            let evicted_page_addr = payload_start_addr + (evicted_page_index * PAGE_SIZE);
-            derive_page_key(base_key, evicted_page_index, &mut page_key);
-            dprintln!(
-                "Derived key to re-encrypt evicted page {}...",
-                evicted_page_index
+    dprintln!("Faulting page is already decrypted. Querying page for its protection...");
+
+    let mut mem_info: MEMORY_BASIC_INFORMATION = unsafe { mem::zeroed() };
+    if unsafe {
+        VirtualQuery(
+            page_addr as *const _,
+            &mut mem_info,
+            size_of::<MEMORY_BASIC_INFORMATION>(),
+        )
+    } == 0
+    {
+        dprintln!("Couldn't query the page protection!");
+        return Err(());
+    }
+
+    if mem_info.Protect != default_protection {
+        dprintln!("Page protection changed unexpectedly. Restoring...");
+
+        let mut old_protect: PAGE_PROTECTION_FLAGS = 0x00;
+        if unsafe {
+            VirtualProtect(
+                page_addr as *const _,
+                PAGE_SIZE,
+                default_protection,
+                &mut old_protect,
+            ) == 0
+        } {
+            dprintln!("Couldn't update page protection!");
+            return Err(());
+        }
+    }
+
+    dprintln!("Queried page is ready.");
+    return Ok(());
+}
+
+fn do_page_decryption<const N: usize>(
+    payload_start_addr: usize,
+    page_index: usize,
+    base_key: &U8_32,
+    default_protection: PAGE_PROTECTION_FLAGS,
+    decrypted_pages: &mut LruPageList<N>,
+) -> Result<(), ()> {
+    let mut page_key_buf: U8_32 = [0u8; 32];
+    let mut old_protect: PAGE_PROTECTION_FLAGS = 0x00;
+
+    // ─── Re-encrypt Evicted Page ─────────────────────────────────
+    if let Some(evicted_page_index) = decrypted_pages.add(page_index) {
+        dprintln!(
+            "A LRU page is evicted! Evicted page index: {}",
+            evicted_page_index
+        );
+        dprintln!("Re-encrypting evicted page {}...", evicted_page_index);
+
+        let evicted_page_addr = payload_start_addr + (evicted_page_index * PAGE_SIZE);
+        derive_page_key(base_key, evicted_page_index, &mut page_key_buf);
+
+        dprintln!(
+            "Derived key to re-encrypt evicted page {}...",
+            evicted_page_index
+        );
+
+        if unsafe {
+            VirtualProtect(
+                evicted_page_addr as *const _,
+                PAGE_SIZE,
+                PAGE_READWRITE,
+                &mut old_protect,
+            )
+        } == 0
+        {
+            dprintln!("Failed to update memory protection for evicted page! (1)");
+            return Err(());
+        } else {
+            encrypt_page(
+                unsafe {
+                    slice::from_raw_parts_mut::<u8>(evicted_page_addr as *mut _, PAGE_SIZE)
+                        .try_into()
+                        .unwrap()
+                },
+                &page_key_buf,
             );
 
             if unsafe {
                 VirtualProtect(
                     evicted_page_addr as *const _,
                     PAGE_SIZE,
-                    PAGE_READWRITE,
+                    PAGE_NOACCESS,
                     &mut old_protect,
                 )
             } == 0
             {
-                dprintln!("Failed to update memory protection for evicted page! (1)");
-            } else {
-                encrypt_page(
-                    unsafe {
-                        slice::from_raw_parts_mut::<u8>(evicted_page_addr as *mut _, PAGE_SIZE)
-                            .try_into()
-                            .unwrap()
-                    },
-                    &page_key,
-                );
-
-                if unsafe {
-                    VirtualProtect(
-                        evicted_page_addr as *const _,
-                        PAGE_SIZE,
-                        PAGE_NOACCESS,
-                        &mut old_protect,
-                    )
-                } == 0
-                {
-                    dprintln!("Failed to update memory protection for evicted page! (2)");
-                }
+                dprintln!("Failed to update memory protection for evicted page! (2)");
+                return Err(());
             }
-
-            dprintln!("Re-encrypted evicted page {}.", evicted_page_index);
         }
-    } else {
-        dprintln!("Faulting page is already decrypted. Querying page for its protection...");
 
-        let mut mem_info: MEMORY_BASIC_INFORMATION = unsafe { mem::zeroed() };
-
-        if unsafe {
-            VirtualQuery(
-                fault_page_addr as *const _,
-                &mut mem_info,
-                size_of::<MEMORY_BASIC_INFORMATION>(),
-            )
-        } > 0
-        {
-            if mem_info.Protect != default_protection {
-                dprintln!(
-                    "Faulting page has different protection than default/overridden protection. Updating..."
-                );
-
-                if unsafe {
-                    VirtualProtect(
-                        fault_page_addr as *const _,
-                        PAGE_SIZE,
-                        default_protection,
-                        &mut old_protect,
-                    ) != 0
-                } {
-                    dprintln!(
-                        "Successfully updated page protection to {}.",
-                        prot_to_str(default_protection)
-                    );
-                    return Ok(EXCEPTION_CONTINUE_EXECUTION);
-                } else {
-                    dprintln!("Couldn't update page protection! Skipping...");
-                }
-            } else {
-                dprintln!("Queried page has same protection. Skipping...");
-                return Ok(EXCEPTION_CONTINUE_SEARCH);
-            }
-        } else {
-            dprintln!("Couldn't query the page. Skipping...");
-            return Ok(EXCEPTION_CONTINUE_SEARCH);
-        }
+        dprintln!("Re-encrypted evicted page {}.", evicted_page_index);
     }
 
     // ─── Decrypt Current Page ────────────────────────────
     dprintln!("Updating protection level of page {} to rw-.", page_index);
+    let fault_page_addr = payload_start_addr + (page_index * PAGE_SIZE);
 
     if unsafe {
         VirtualProtect(
@@ -228,13 +283,13 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
     } == 0
     {
         dprintln!("Failed to update memory protection on faulting page!");
-        return Ok(EXCEPTION_CONTINUE_SEARCH);
+        return Err(());
     }
 
-    derive_page_key(base_key, page_index, &mut page_key);
+    derive_page_key(base_key, page_index, &mut page_key_buf);
     dprintln!(
         "Derived page key: {}",
-        page_key.map(|b| format!("{:02X}", b)).join(" ")
+        page_key_buf.map(|b| format!("{:02X}", b)).join(" ")
     );
 
     decrypt_page(
@@ -243,7 +298,7 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
                 .try_into()
                 .unwrap()
         },
-        &page_key,
+        &page_key_buf,
     );
     dprintln!("Decrypted page {}.", page_index);
 
@@ -263,25 +318,20 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<i32, S
     } == 0
     {
         dprintln!("Failed to update memory protection on faulting page!");
-        return Ok(EXCEPTION_CONTINUE_SEARCH);
+        return Err(());
     }
 
-    dprintln!("Continuing execution...");
-    Ok(EXCEPTION_CONTINUE_EXECUTION)
+    Ok(())
 }
 
-pub(crate) unsafe extern "system" fn page_fault_handler(
-    exception_info: *mut EXCEPTION_POINTERS,
-) -> i32 {
-    match _page_fault_handler(exception_info) {
-        Ok(val) => val,
-        Err(_err) => {
-            dprintln!("!!! An error occurred during handling page fault !!!");
-            dprintln!("{}", _err);
+#[inline]
+fn get_page_addr(addr: usize) -> usize {
+    addr & !(PAGE_SIZE - 1)
+}
 
-            EXCEPTION_CONTINUE_SEARCH
-        }
-    }
+#[inline]
+fn get_page_index(payload_start_addr: usize, addr: usize) -> usize {
+    (get_page_addr(addr) - payload_start_addr) / PAGE_SIZE
 }
 
 fn prot_to_str(protect: PAGE_PROTECTION_FLAGS) -> &'static str {
@@ -294,6 +344,18 @@ fn prot_to_str(protect: PAGE_PROTECTION_FLAGS) -> &'static str {
         PAGE_EXECUTE_READ => "r-x",
         PAGE_EXECUTE_READWRITE => "rwx",
         _ => "unknown",
+    }
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                    Main                                    */
+/* -------------------------------------------------------------------------- */
+pub(crate) unsafe extern "system" fn page_fault_handler(
+    exception_info: *mut EXCEPTION_POINTERS,
+) -> i32 {
+    match _page_fault_handler(exception_info) {
+        Ok(_) => EXCEPTION_CONTINUE_EXECUTION,
+        Err(_) => EXCEPTION_CONTINUE_SEARCH,
     }
 }
 
