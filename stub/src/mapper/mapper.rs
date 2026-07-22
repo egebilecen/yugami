@@ -1,22 +1,14 @@
-use std::{
-    error::Error,
-    ffi::{CStr, c_void},
-};
+use std::{error::Error, ffi::CStr};
 
 use pe_parser::{pe::parse_portable_executable, section::SectionFlags};
 use region::Protection;
 use windows_sys::Win32::System::{
     LibraryLoader::{GetModuleHandleA, GetProcAddress, LoadLibraryA},
-    SystemServices::{
-        DLL_PROCESS_ATTACH, IMAGE_BASE_RELOCATION, IMAGE_IMPORT_DESCRIPTOR, IMAGE_TLS_DIRECTORY64,
-        PIMAGE_TLS_CALLBACK,
-    },
-    Threading::{TLS_OUT_OF_INDEXES, TlsAlloc},
+    SystemServices::{IMAGE_BASE_RELOCATION, IMAGE_IMPORT_DESCRIPTOR},
     WindowsProgramming::IMAGE_THUNK_DATA64,
 };
 
 use super::error::MapperError;
-use super::tls::{ALLOCATED_TLS_INDEX, TLS_CALLBACKS_ADDR, TLS_DIR_ADDR, setup_current_thread_tls};
 use crate::handlers::page_fault::PAGE_PROTECTIONS;
 #[cfg(debug_assertions)]
 use debug::dprintln;
@@ -28,30 +20,8 @@ pub fn map_pe(pe_bytes: &[u8]) -> Result<EntryFn, Box<dyn Error>> {
     let image_base_addr = pe_bytes.as_ptr() as usize;
     let pe = parse_portable_executable(pe_bytes)?;
 
-    let (preferred_image_base, entry_point_rva, import_table_rva, reloc_table_rva, tls_table_rva) =
+    let (preferred_image_base, entry_point_rva, import_table_rva, reloc_table_rva) =
         if let Some(opt_header) = pe.optional_header_64 {
-            dprintln!(
-                "Entry point RVA: 0x{:02X} ({})",
-                opt_header.address_of_entry_point,
-                opt_header.address_of_entry_point
-            );
-            dprintln!(
-                "IAT RVA: 0x{:02X} ({})",
-                opt_header
-                    .data_directories
-                    .import_address_table
-                    .virtual_address,
-                opt_header
-                    .data_directories
-                    .import_address_table
-                    .virtual_address
-            );
-            dprintln!(
-                "IAT size: {} (0x{:02X})",
-                opt_header.data_directories.import_address_table.size,
-                opt_header.data_directories.import_address_table.size
-            );
-
             (
                 opt_header.image_base,
                 opt_header.address_of_entry_point,
@@ -60,11 +30,26 @@ pub fn map_pe(pe_bytes: &[u8]) -> Result<EntryFn, Box<dyn Error>> {
                     .data_directories
                     .base_relocation_table
                     .virtual_address,
-                opt_header.data_directories.tls_table.virtual_address,
             )
         } else {
             return Err(MapperError::InvalidArchitectureError.into());
         };
+
+    dprintln!(
+        "Entry point RVA: 0x{:02X} ({})",
+        entry_point_rva,
+        entry_point_rva
+    );
+    dprintln!(
+        "Import table RVA: 0x{:02X} ({})",
+        import_table_rva,
+        import_table_rva
+    );
+    dprintln!(
+        "Relocations table RVA: 0x{:02X} ({})",
+        reloc_table_rva,
+        reloc_table_rva
+    );
 
     // ─── Save Section Protections ────────────────────────────────────────
     for section in pe.section_table.iter() {
@@ -105,9 +90,6 @@ pub fn map_pe(pe_bytes: &[u8]) -> Result<EntryFn, Box<dyn Error>> {
         preferred_image_base as usize,
         reloc_table_rva,
     )?;
-
-    // ─── Handle TLS Callbacks ────────────────────────────────────────────
-    handle_tls_callbacks(image_base_addr, tls_table_rva)?;
 
     // ─── Return Entry Point ──────────────────────────────────────────────
     let pe_entry_point = image_base_addr.wrapping_add(entry_point_rva as usize);
@@ -303,57 +285,6 @@ pub(crate) fn resolve_relocations(
         }
 
         block_offset += reloc_block.SizeOfBlock as usize;
-    }
-
-    Ok(())
-}
-
-fn handle_tls_callbacks(image_base_addr: usize, tls_table_rva: u32) -> Result<(), Box<dyn Error>> {
-    let tls_dir_addr = image_base_addr + tls_table_rva as usize;
-    let tls_dir = unsafe { &*(tls_dir_addr as *const IMAGE_TLS_DIRECTORY64) };
-    let address_of_callbacks = tls_dir.AddressOfCallBacks;
-    let address_of_index = tls_dir.AddressOfIndex;
-
-    TLS_DIR_ADDR
-        .set(tls_dir_addr)
-        .map_err(|_| MapperError::InitializedCellError)?;
-
-    // Allocate TLS index.
-    let address_of_index_ptr = address_of_index as *mut u32;
-    if !address_of_index_ptr.is_null() {
-        let allocated_index = unsafe { TlsAlloc() };
-
-        if allocated_index != TLS_OUT_OF_INDEXES {
-            ALLOCATED_TLS_INDEX
-                .set(allocated_index)
-                .map_err(|_| MapperError::InitializedCellError)?;
-
-            unsafe {
-                *address_of_index_ptr = allocated_index;
-                setup_current_thread_tls(tls_dir, allocated_index)
-                    .map_err(|_| MapperError::UnknownError)?;
-            }
-        } else {
-            return Err(MapperError::TlsIndexAllocationError.into());
-        }
-    }
-
-    if tls_dir.AddressOfCallBacks != 0 {
-        TLS_CALLBACKS_ADDR
-            .set(tls_dir.AddressOfCallBacks as usize)
-            .map_err(|_| MapperError::InitializedCellError)?;
-
-        let mut callback_ptr = address_of_callbacks as *const PIMAGE_TLS_CALLBACK;
-        unsafe {
-            while let Some(callback) = *callback_ptr {
-                callback(
-                    image_base_addr as *mut c_void,
-                    DLL_PROCESS_ATTACH,
-                    std::ptr::null_mut(),
-                );
-                callback_ptr = callback_ptr.add(1);
-            }
-        }
     }
 
     Ok(())
