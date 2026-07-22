@@ -1,5 +1,6 @@
 use std::{
     cell::UnsafeCell,
+    mem,
     sync::atomic::{AtomicBool, Ordering},
 };
 
@@ -18,7 +19,7 @@ unsafe impl Send for WinLock {}
 impl WinLock {
     pub const fn new() -> Self {
         Self {
-            lock: UnsafeCell::new(unsafe { std::mem::zeroed() }),
+            lock: UnsafeCell::new(unsafe { mem::zeroed() }),
             is_initialized: AtomicBool::new(false),
         }
     }

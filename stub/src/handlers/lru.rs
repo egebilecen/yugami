@@ -4,6 +4,8 @@ use proc_macros::xor_str;
 
 const INVALID_PAGE: usize = usize::MAX;
 
+// TODO: Implement O(1) LRU cache by using linked list
+//       approach.
 #[derive(Copy, Clone)]
 pub(crate) struct LruPageList<const N: usize> {
     pages: [usize; N],

@@ -13,11 +13,16 @@ use windows_sys::Win32::System::{
 
 use super::error::MapperError;
 use crate::handlers::page_fault::PAGE_PROTECTIONS;
-#[cfg(debug_assertions)]
+#[allow(unused_imports)]
 use debug::dprintln;
 use kekkai::crypto::PAGE_SIZE;
 
 pub type EntryFn = extern "C" fn() -> i32;
+
+// Temporary shadowing to disable debug logs.
+macro_rules! dprintln {
+    ($($tt:tt)*) => {};
+}
 
 pub fn map_pe(pe_bytes: &[u8]) -> Result<EntryFn, Box<dyn Error>> {
     let image_base_addr = pe_bytes.as_ptr() as usize;
