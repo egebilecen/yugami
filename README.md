@@ -28,3 +28,18 @@ Outputs `packed.exe` in the current directory.
 4. Derive per-page keys using BLAKE3.
 5. Encrypt each page with ChaCha20.
 6. Append encrypted payload + metadata as overlay.
+
+---
+
+## Decryption Process
+
+1. Payload loaded into memory with PAGE_NOACCESS protection.
+2. Page fault exception triggered on first access.
+3. Page index derived from faulting address.
+4. Derive page key using BLAKE3 with page index.
+5. Update page protection to PAGE_READWRITE.
+6. Decrypt page using ChaCha20 with derived key.
+7. Update page protection back to original.
+8. Add page to LRU cache (max 256 pages).
+9. If LRU full, re-encrypt and protect evicted page as PAGE_NOACCESS.
+10. Return from exception handler, execution resumes.
