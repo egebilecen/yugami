@@ -125,9 +125,6 @@ fn run(args: CliArgs) -> Result<(), Box<dyn Error>> {
     thread::sleep(sleep_dur);
 
     // ─── Map Payload Layout ──────────────────────────────────────────────
-    // TODO: Move mapping payload layout process to stub. Create a new
-    //       function like `map_exe()`, which would perform all steps
-    //       taken in the stub.
     spinner.set_message("Mapping payload layout...");
     let mut mapped_payload = vec![0u8; image_size as usize];
 

@@ -47,7 +47,6 @@ macro_rules! dprintln {
 //     ($($tt:tt)*) => {};
 // }
 
-// TODO: Do NOT use dynamic memory allocations in the fault handler.
 #[inline]
 fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<(), ()> {
     let _guard = FAULT_HANDLER_LOCK.lock();
