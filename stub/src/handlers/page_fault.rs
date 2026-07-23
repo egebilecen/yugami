@@ -60,7 +60,7 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<(), ()
     let exception_reason = exception_record.ExceptionInformation[0];
     let exception_data_addr = exception_record.ExceptionInformation[1];
 
-    let (payload_start_addr, payload_end_addr) = if let Some(start_addr) = PAYLOAD_START_ADDR.get()
+    let (_payload_start_addr, _payload_end_addr) = if let Some(start_addr) = PAYLOAD_START_ADDR.get()
         && let Some(end_addr) = PAYLOAD_END_ADDR.get()
     {
         (start_addr.to_owned(), end_addr.to_owned())
@@ -89,8 +89,8 @@ fn _page_fault_handler(exception_info: *mut EXCEPTION_POINTERS) -> Result<(), ()
         "Exception inacessible data address: 0x{:02X}",
         exception_data_addr
     );
-    dprintln!("Payload start address: 0x{:02X}", payload_start_addr);
-    dprintln!("Payload end address: 0x{:02X}", payload_end_addr);
+    dprintln!("Payload start address: 0x{:02X}", _payload_start_addr);
+    dprintln!("Payload end address: 0x{:02X}", _payload_end_addr);
 
     if exception_code != EXCEPTION_ACCESS_VIOLATION as u32 {
         return Err(());
@@ -203,7 +203,7 @@ fn ensure_page_ready(page_addr: usize) -> Result<(), ()> {
     }
 
     dprintln!("Queried page is ready.");
-    return Ok(());
+    Ok(())
 }
 
 fn do_page_decryption<const N: usize>(
@@ -335,6 +335,7 @@ fn get_page_index(payload_start_addr: usize, addr: usize) -> usize {
     (get_page_addr(addr) - payload_start_addr) / PAGE_SIZE
 }
 
+#[allow(unused)]
 fn prot_to_str(protect: PAGE_PROTECTION_FLAGS) -> &'static str {
     let base_protect = protect & 0xFF;
 

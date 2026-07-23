@@ -10,6 +10,7 @@ use argh::FromArgs;
 use indicatif::{ProgressBar, ProgressStyle};
 use pe_parser::pe::parse_portable_executable;
 
+#[allow(unused_imports)]
 use common::crypto::PAGE_SIZE;
 use common::random::get_random_bytes;
 use common::{crypto::encrypt_payload, payload::PayloadInfo};

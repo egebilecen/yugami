@@ -55,9 +55,7 @@ impl<const N: usize> LruPageList<N> {
         }
 
         for i in page_index..N - 1 {
-            let temp = self.pages[i + 1];
-            self.pages[i + 1] = self.pages[i];
-            self.pages[i] = temp;
+            self.pages.swap(i + 1, i);
         }
     }
 
