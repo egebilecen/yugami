@@ -6,4 +6,7 @@
 - Used to refine documentation by fixing grammatical errors and improving natural phrasing.
 - Used to generate Rust macros.
 
-*That's it, really.*
+## Qwen3.5 35B-A3B
+- Used to create README file.
+
+*That's it, really. Also, no code was directly copied directly from LLMs.*
