@@ -9,4 +9,4 @@
 ## Qwen3.5 35B-A3B
 - Used to create README file.
 
-*That's it, really. Also, no code was directly copied directly from LLMs.*
+*That's it, really. Also, no code was directly copied from LLMs.*
