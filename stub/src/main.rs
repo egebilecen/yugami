@@ -21,8 +21,8 @@ use crate::handlers::page_fault::{
     BASE_KEY, PAYLOAD_END_ADDR, PAYLOAD_START_ADDR, page_fault_handler,
 };
 use crate::mapper::map_pe;
+use common::payload::PayloadInfo;
 use debug::dprintln;
-use kekkai::payload::PayloadInfo;
 use proc_macros::xor_string;
 
 fn run() -> Result<(), Box<dyn Error>> {

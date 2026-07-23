@@ -1,11 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["debug", "kekkai", "packer", "proc_macros", "stub"]
+members = ["debug", "packer", "proc_macros", "common", "stub"]
 
 [workspace.dependencies]
 debug = { path = "debug" }
-kekkai = { path = "kekkai" }
 proc_macros = { path = "proc_macros" }
+common = { path = "common" }
 
 [profile.release]
 debug = "none"

@@ -10,10 +10,10 @@ use argh::FromArgs;
 use indicatif::{ProgressBar, ProgressStyle};
 use pe_parser::pe::parse_portable_executable;
 
+use common::crypto::PAGE_SIZE;
+use common::random::get_random_bytes;
+use common::{crypto::encrypt_payload, payload::PayloadInfo};
 use debug::dprintln;
-use kekkai::crypto::PAGE_SIZE;
-use kekkai::random::get_random_bytes;
-use kekkai::{crypto::encrypt_payload, payload::PayloadInfo};
 
 #[derive(FromArgs, Debug)]
 #[argh(description = "=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=")]

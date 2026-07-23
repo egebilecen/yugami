@@ -22,7 +22,7 @@ use super::lru::LruPageList;
 use crate::handlers::lock::WinLock;
 #[allow(unused_imports)]
 use debug::dprintln;
-use kekkai::crypto::{PAGE_SIZE, U8_32, decrypt_page, derive_page_key, encrypt_page};
+use common::crypto::{PAGE_SIZE, U8_32, decrypt_page, derive_page_key, encrypt_page};
 use proc_macros::xor_str;
 
 pub(crate) static BASE_KEY: OnceLock<U8_32> = OnceLock::new();

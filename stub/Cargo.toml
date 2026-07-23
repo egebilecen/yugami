@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 debug.workspace = true
-kekkai.workspace = true
+common.workspace = true
 pe-parser = "0.7.0"
 proc_macros.workspace = true
 windows-sys = {

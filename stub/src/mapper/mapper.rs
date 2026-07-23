@@ -15,7 +15,7 @@ use super::error::MapperError;
 use crate::handlers::page_fault::PAGE_PROTECTIONS;
 #[allow(unused_imports)]
 use debug::dprintln;
-use kekkai::crypto::PAGE_SIZE;
+use common::crypto::PAGE_SIZE;
 
 pub type EntryFn = extern "C" fn() -> i32;
 
