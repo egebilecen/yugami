@@ -53,7 +53,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         ).into());
     }
 
-    let payload_info = unsafe { ptr::read(overlay.as_ptr() as *const PayloadInfo) };
+    let payload_info = unsafe { &*((overlay.as_ptr()) as *const PayloadInfo) };
     BASE_KEY
         .set(payload_info.base_key)
         .map_err(|_| xor_string!("Couldn't set base key!").to_string())?;
