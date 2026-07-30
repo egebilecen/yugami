@@ -43,3 +43,10 @@ Outputs `packed.exe` in the current directory.
 8. Add page to LRU cache (max 256 pages).
 9. If LRU full, re-encrypt and protect evicted page as PAGE_NOACCESS.
 10. Return from exception handler, execution resumes.
+
+---
+
+## Inspirations
+
+- [UPX](https://github.com/upx/upx): The first packer I ever used many years ago; sparked my curiosity about how packers work and holds a special place in my heart.
+- [TinyLoad](https://github.com/iamsopotatoe-coder/TinyLoad): JIT page decryption idea.
